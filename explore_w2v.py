@@ -14,48 +14,10 @@ from job_parse import JOBQuery
 import glob
 from collections import defaultdict
 from utils.utils import *
+import pdb
 
 def find_vector_containing(string):
     keys = model.keys()
-
-def emit_job_features(wv):
-    # first open all files
-    print("emit job features...")
-    queries = []
-    # key: table_name, value: list of attributes
-    # file_names = glob.glob("job/*.sql")
-    file_names = glob.glob("job-ryan/*.sql")
-    for fn in file_names:
-        # if (args.query_match not in fn):
-            # continue
-        queries.append(JOBQuery(fn))
-
-    for idx, q in enumerate(queries):
-        attrs = list(q.attrs_with_predicate(values=True))
-        joins = list(q.joins())
-        print("query: ", file_names[idx])
-        if "19a.sql" in file_names[idx]:
-            print("19a.sql!")
-            import pdb
-            pdb.set_trace()
-
-        print(attrs)
-        print(joins)
-        for a in attrs:
-            print(a)
-            assert len(a) == 4
-            table_name = a[0]
-            attribute = a[1]
-            cmp_op = a[2]
-            values = a[3]
-            # can be multiple values for each predicate (e.g., when cmp op = IN)
-            # FIXME: use conditining for different comparison operators
-            for v in values:
-                v = preprocess_word(v)
-                print(v)
-
-        import pdb
-        pdb.set_trace()
 
 def make_tsne(model):
     X = []
@@ -118,12 +80,14 @@ def make_tsne(model):
 
 model_dir = "/data/pari/embeddings/word2vec/"
 # model_name = model_dir + "all_attributes.bin"
-model_name = model_dir + "all_attributes_split_words.bin"
+# model_name = model_dir + "all_attributes_split_words.bin"
 # model_name = model_dir + "preprocessed-words-model.bin"
 # model_name = model_dir + "joined-tables-half.bin"
+model_name = model_dir + "joined-correlated-2queries-test.bin"
 
 model = Word2Vec.load(model_name)
 print(model)
 wv = model.wv
 del model
-emit_job_features(wv)
+pdb.set_trace()
+

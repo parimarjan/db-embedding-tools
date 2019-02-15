@@ -1,4 +1,4 @@
-from gensim.models import Word2Vec
+from gensim.models import Word2Vec, FastText
 import argparse
 from collections import defaultdict
 from job_parse import JOBQuery
@@ -10,6 +10,8 @@ import os
 import string
 import pdb
 from utils.utils import *
+import itertools
+from pg_iterator import PGIterator
 
 QUERY_TEMPLATE = "SELECT {ATTRIBUTES} FROM {TABLE} WHERE random() < {PROB}"
 
@@ -39,6 +41,18 @@ def read_flags():
             default=0.1)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--split_words", action="store_true")
+    parser.add_argument("--train_pairs", action="store_true")
+    parser.add_argument("--exclude_the", action="store_true")
+    parser.add_argument("--exclude_nums", action="store_true")
+    parser.add_argument("--regen_sentences", action="store_true")
+    parser.add_argument("--sentence_gen", action="store_true")
+    parser.add_argument("--relevant_selects", action="store_true")
+    parser.add_argument("--min_count", type=int, required=False,
+            default=100)
+    parser.add_argument("--embedding_size", type=int, required=False,
+            default=100)
+    parser.add_argument("--gensim_model_name", type=str, required=False,
+            default="word2vec")
 
     return parser.parse_args()
 
@@ -76,16 +90,23 @@ def find_relevant_attributes():
     return tables
 
 def train(sentences):
-    print("going to train word2vec with {} sentences".format(len(sentences)))
     # train model
-    model = Word2Vec(sentences, size=100, window=20, sg=0, workers=20,
-                min_count=10)
+    if args.train_pairs and args.relevant_selects:
+        min_count = args.min_count*5
+    elif args.train_pairs:
+        min_count = args.min_count*10
+    else:
+        min_count = args.min_count
+
+    if "word2vec" in args.gensim_model_name:
+        model = Word2Vec(sentences, size=args.embedding_size, window=20, sg=0, workers=20,
+                    min_count=min_count)
+    elif "fast" in args.gensim_model_name:
+        model = FastText(sentences, size=args.embedding_size, window=20, sg=0, workers=20,
+                    min_count=min_count)
+
     # summarize the loaded model
     print(model)
-    # summarize vocabulary
-    # words = list(model.wv.vocab)
-    # print(words)
-
     # access vector for one word
     # save model
     model.save(args.data_dir + args.model_name)
@@ -164,11 +185,18 @@ def main():
     print("sentences name is: ", sentences_fname)
     tables = find_relevant_attributes()
     sentences = []
-    if (os.path.exists(sentences_fname)):
+    if args.sentence_gen:
+        sql_queries = []
+        for fn in glob.glob(args.sql_dir + "/*.sql"):
+            with open(fn, "r") as f:
+                sql_queries.append(f.read())
+        sentences = PGIterator(sql_queries, args)
+    elif (os.path.exists(sentences_fname)) and not args.regen_sentences:
         with open(sentences_fname, "rb") as f:
             sentences = pickle.loads(f.read())
         print("loaded saved sentences, len: ", len(sentences))
     else:
+        # just grab it from relevant tables
         if args.sql is None and args.sql_dir is None:
             for table in tables:
                 attributes = ""
@@ -181,7 +209,6 @@ def main():
                     attributes = attributes.replace("}", "")
                     # messes up the selects
                     attributes = attributes.replace("'", "")
-
                 attrs, rows = sample_rows(table, attributes, prob=args.sample_prob)
                 preprocess_rows(sentences, rows, attrs)
                 print("table: ", table)
@@ -219,6 +246,7 @@ def main():
 
                 res_attrs, rows = get_sql_rows(sql, select)
                 preprocess_rows(sentences, rows, res_attrs)
+                print("num sentences: ", len(sentences))
 
         elif args.sql is not None:
             print("will find sentences from sql: ")
@@ -230,18 +258,9 @@ def main():
         else:
             assert False
 
-        print("going to write out sentences: ", sentences_fname)
-        with open(sentences_fname, "wb") as f:
-            f.write(pickle.dumps(sentences))
-
-    if False:
-        print("reprocessing sentences!")
-        for s in sentences:
-            for i, w in enumerate(s):
-                if len(w) > 50:
-                    s[i] = ""
-                else:
-                    s[i] = preprocess_word(w)
+        # print("going to write out sentences: ", sentences_fname)
+        # with open(sentences_fname, "wb") as f:
+            # f.write(pickle.dumps(sentences))
 
     train(sentences)
 
@@ -250,10 +269,7 @@ def preprocess_rows(sentences, rows, attrs):
     fills up sentences with rows.
     '''
     print(attrs)
-    for row_num, row in enumerate(rows):
-        if row_num % 100000 == 0:
-            print("row_num: ", row_num)
-        # convert it to a sentence
+    def handle_sentence(sentence):
         sentence = []
         for i, word in enumerate(row):
             if "id" in attrs[i] and args.no_id:
@@ -268,11 +284,25 @@ def preprocess_rows(sentences, rows, attrs):
                     if len(all_words) > 6:
                         continue
                     for w in all_words:
-                        w = preprocess_word(w)
+                        w = preprocess_word(w, exclude_the=args.exclude_the,
+                                exclude_nums=args.exclude_nums)
                         sentence.append(w)
                 else:
-                    sentence.append(preprocess_word(str(word)))
-        sentences.append(sentence)
+                    w = preprocess_word(str(word), exclude_the=args.exclude_the,
+                            exclude_nums=args.exclude_nums)
+                    sentence.append(w)
+        return sentence
+
+    for row_num, row in enumerate(rows):
+        if row_num % 100000 == 0:
+            print("row_num: ", row_num)
+        # convert it to a sentence
+        if args.train_pairs:
+           pair_words  = list(itertools.combinations(row, 2))
+           for pair in pair_words:
+               sentences.append(handle_sentence(pair))
+        else:
+            sentences.append(handle_sentence(row))
 
 def get_saved_data_name(name_suffix):
     return args.data_dir + "/" + get_name(name_suffix) + ".json"
@@ -290,6 +320,9 @@ def get_name(name_suffix):
         key_vals += args.sql_dir
     name = str(deterministic_hash(str(key_vals)))[1:4] +"-"+name_suffix
     name += args.model_name
+    name += str(args.train_pairs)
+    name += str(args.exclude_the)
+    name += str(args.exclude_nums)
     return name
 
 args = read_flags()
