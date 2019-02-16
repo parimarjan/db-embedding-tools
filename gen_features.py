@@ -18,7 +18,7 @@ def get_next_cmp_op_id():
 
 def get_unknown_feature_vec():
     vec = []
-    for i in range(100):
+    for i in range(args.embedding_len):
         vec.append(0.00)
     return np.array(vec)
 
@@ -106,10 +106,12 @@ def get_feature_vec(vals):
 
     num_vals = [vals[1]]
     wv = vals[2]
-    assert len(wv) == 100
     wv = list(wv)
 
-    return cmp_op_vec + num_vals + wv
+    if args.no_wv:
+        return cmp_op_vec + [wv[-1]]
+    else:
+        return cmp_op_vec + num_vals + wv
 
 def write_out_features(final_vectors):
     print("final pass to write out feature vectors")
@@ -121,7 +123,10 @@ def write_out_features(final_vectors):
         f = open(out_name, "wb")
         out_dict = {}
         for attr, vals in data.items():
-            assert len(vals[2]) == 100
+            if args.add_count:
+                assert len(vals[2]) == args.embedding_len+1
+            else:
+                assert len(vals[2]) == args.embedding_len
             feature_vec = get_feature_vec(vals)
             out_dict[attr] = feature_vec
         f.write(pickle.dumps(out_dict))
@@ -167,11 +172,14 @@ def main():
         handle_token_list(where_clauses, extracted_data[file_name])
 
     # load model
-    model_dir = "/data/pari/embeddings/word2vec/"
+    # model_dir = args.data_dir
     # model_name = model_dir + "all_attributes.bin"
     # model_name = model_dir + "all_attributes_split_words.bin"
-    model_name = model_dir + "preprocessed-words-model.bin"
+    # model_name = model_dir + "preprocessed-words-model.bin"
     # model_name = model_dir + "joined-tables-half.bin"
+    # model_name = model_dir + "all-w2v-nopairs25.bin"
+    # model_name = model_dir + "new-wv-nopairs25.bin"
+    model_name = args.data_dir + args.model_name
 
     model = Word2Vec.load(model_name)
     print(model)
@@ -179,6 +187,7 @@ def main():
     del model
     total_found = 0
     total_not_found = 0
+    all_not_found = []
     total_like = 0
 
     for query, data in extracted_data.items():
@@ -204,9 +213,6 @@ def main():
             if "not null" in cmp_op or "NOT NULL" in cmp_op:
                 # FIXME:
                 continue
-            # elif "NOT LIKE" in cmp_op or "not like" in cmp_op:
-                # # FIXME:
-                # continue
             elif "LIKE" in cmp_op or "like" in cmp_op:
                 # FIXME: ( ...), $ signs
                 like += 1
@@ -226,6 +232,7 @@ def main():
             # matches.
             num_matches = 0
             matched_vectors = []
+            total_count = 0
             for val in literal_vals:
                 # FIXME: not doing anything for join conditions
                 if ("." in val):
@@ -235,38 +242,46 @@ def main():
                 if preprocessed_val in wv:
                     found += 1
                     matched_vectors.append(wv[preprocessed_val])
+                    total_count += wv.vocab[preprocessed_val].count
                 elif len(preprocessed_val.split()) > 1:
                     # separate out each value into individual words too
                     word_vectors = []
                     for word in preprocessed_val.split():
                         if word not in wv:
                             not_found += 1
+                            all_not_found.append(word)
                             word_vectors.append(get_unknown_feature_vec())
                             continue
                         word_vectors.append(wv[word])
+                        total_count += wv.vocab[word].count
                     word_vectors = np.array(word_vectors)
                     matched_vectors.append(np.mean(word_vectors, axis=0))
                 else:
-                    # print("not found")
-                    # print("attribute: ", attribute)
-                    # print("cmp op: ", cmp_op)
-                    # print("orig: ", val)
-                    # print("preprocessed: ", preprocessed_val)
+                    print("not found")
+                    print("attribute: ", attribute)
+                    print("cmp op: ", cmp_op)
+                    print("orig: ", val)
+                    print("preprocessed: ", preprocessed_val)
                     not_found += 1
+                    all_not_found.append(val)
                     matched_vectors.append(get_unknown_feature_vec())
-
-            for v in matched_vectors:
-                if len(v) != 100:
-                    print(v)
-                    pdb.set_trace()
 
             if len(matched_vectors) != num_matches:
                 pdb.set_trace()
-            matched_vectors = np.array(matched_vectors)
             if len(matched_vectors) == 0:
                 continue
-            final_wv = np.sum(matched_vectors, axis=0)
+            matched_vectors = np.array(matched_vectors)
+
+            # FIXME: what is the best way to deal with this? I think always
+            # choose mean seems more sensible.
+            # final_wv = np.sum(matched_vectors, axis=0)
+            final_wv = np.mean(matched_vectors, axis=0)
+            if args.add_count:
+                final_wv = np.append(final_wv, total_count)
+                assert len(final_wv) == args.embedding_len+1
+
             if attribute in final_vectors[query]:
+                pdb.set_trace()
                 # then take mean of this vector, and what exists there. + add
                 # new cmp
                 old_result = final_vectors[query][attribute]
@@ -285,6 +300,9 @@ def main():
         total_not_found += not_found
         total_like += like
 
+    assert total_not_found == len(all_not_found)
+    for w in all_not_found:
+        print(w)
     print("found: {}, not_found: {}, like: {}".format(total_found, total_not_found,
         total_like))
     regex = re.compile(".*robert.*")
@@ -296,10 +314,15 @@ def main():
 def read_flags():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", type=str, required=False,
-            default="./data/")
+            default="/data/pari/embeddings/word2vec/")
+    parser.add_argument("--model_name", type=str, required=False,
+            default="test.bin")
     parser.add_argument("--features_dir", type=str, required=False,
             default="./features/")
+    parser.add_argument("--embedding_len", type=int, required=True)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--add_count", action="store_true")
+    parser.add_argument("--no_wv", action="store_true")
     return parser.parse_args()
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 from gensim.models import Word2Vec, FastText
+from gensim.models.word2vec import LineSentence
 import argparse
 from collections import defaultdict
 from job_parse import JOBQuery
@@ -12,6 +13,7 @@ import pdb
 from utils.utils import *
 import itertools
 from pg_iterator import PGIterator
+import time
 
 QUERY_TEMPLATE = "SELECT {ATTRIBUTES} FROM {TABLE} WHERE random() < {PROB}"
 
@@ -52,6 +54,10 @@ def read_flags():
     parser.add_argument("--regen_sentences", action="store_true")
     parser.add_argument("--sentence_gen", action="store_true")
     parser.add_argument("--relevant_selects", action="store_true")
+    parser.add_argument("--no_pickle", action="store_false")
+    parser.add_argument("--skipgram", type=int, required=False,
+            default=0)
+
     parser.add_argument("--min_count", type=int, required=False,
             default=100)
     parser.add_argument("--embedding_size", type=int, required=False,
@@ -66,8 +72,6 @@ def find_relevant_attributes():
     # key: table_name, value: list of attributes
     tables = defaultdict(set)
     for fn in glob.glob("job/*.sql"):
-        # if (args.query_match not in fn):
-            # continue
         queries.append(JOBQuery(fn))
     for q in queries:
         attrs = q.attrs_with_predicate()
@@ -95,6 +99,7 @@ def find_relevant_attributes():
     return tables
 
 def train(sentences):
+    print("starting to train!")
     # train model
     if args.train_pairs and args.relevant_selects:
         min_count = args.min_count*5
@@ -104,11 +109,13 @@ def train(sentences):
         min_count = args.min_count
 
     if "word2vec" in args.gensim_model_name:
-        model = Word2Vec(sentences, size=args.embedding_size, window=20, sg=0, workers=20,
-                    min_count=min_count)
+        model = Word2Vec(sentences, size=args.embedding_size, window=20,
+                sg=args.skipgram,
+                workers=16, min_count=min_count)
     elif "fast" in args.gensim_model_name:
-        model = FastText(sentences, size=args.embedding_size, window=20, sg=0, workers=20,
-                    min_count=min_count)
+        model = FastText(sentences,
+            size=args.embedding_size, window=20, sg=args.skipgram, workers=16,
+            min_count=min_count)
 
     # summarize the loaded model
     print(model)
@@ -117,30 +124,10 @@ def train(sentences):
     # trim unneeded model memory = use (much) less RAM
     model.init_sims(replace=True)
     model.save(args.data_dir + args.model_name)
-    pdb.set_trace()
+    # pdb.set_trace()
     # load model
     # new_model = Word2Vec.load(args.data_dir + args.model_name)
     # print(new_model)
-
-def get_sql_rows(query, select="*"):
-    # format the query
-    query = query.replace("*", select)
-    print(query)
-
-    conn = pg.connect(host=args.db_host, database=args.db_name)
-    cur = conn.cursor()
-    print("going to execute: ", query)
-    cur.execute(query)
-    print("successfully executed query!")
-    descr = cur.description
-    attrs = []
-    for d in descr:
-        attrs.append(d[0])
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    print("returning {} rows".format(len(rows)))
-    return attrs, rows
 
 def sample_rows(table_name, attributes, prob):
     conn = pg.connect(host=args.db_host, database=args.db_name)
@@ -172,23 +159,13 @@ def sample_rows(table_name, attributes, prob):
         attrs.append(d[0])
     rows = cur.fetchall()
 
-    # just to explore stuff. Particularly, some single character attributes had
-    # seemed suspicious, but turned out to be missing values, or gender values
-    # (m or f)
-    if args.debug:
-        for row in rows:
-            for column, val in enumerate(row):
-                column_name = attrs[column]
-                if isinstance(val, str) and not val.isdigit() and len(val)==1 \
-                    and val != "m" and val != "f" and val != "-":
-                    pdb.set_trace()
-
     cur.close()
     conn.close()
     return attrs, rows
 
 def main():
     sentences_fname = get_saved_data_name("sentences")
+
     print("sentences name is: ", sentences_fname)
     tables = find_relevant_attributes()
     sentences = []
@@ -198,10 +175,15 @@ def main():
             with open(fn, "r") as f:
                 sql_queries.append(f.read())
         sentences = PGIterator(sql_queries, args)
-    elif (os.path.exists(sentences_fname)) and not args.regen_sentences:
-        with open(sentences_fname, "rb") as f:
-            sentences = pickle.loads(f.read())
-        print("loaded saved sentences, len: ", len(sentences))
+    elif (os.path.exists(sentences_fname + ".txt")  or
+            os.path.exists(sentences_fname + ".pickle")) and not args.regen_sentences:
+        if args.no_pickle:
+            print("going to use saved pickle!")
+            with open(sentences_fname + ".pickle", "rb") as f:
+                sentences = pickle.loads(f.read())
+            print("loaded the saved pickle into memory!")
+        else:
+            sentences = LineSentence(sentences_fname + ".txt")
     else:
         # just grab it from relevant tables
         if args.sql is None and args.sql_dir is None:
@@ -225,100 +207,44 @@ def main():
             for fn in glob.glob(args.sql_dir + "/*.sql"):
                 with open(fn, "r") as f:
                     sql_queries.append(f.read())
-            sentences = list(PGIterator(sql_queries, args))
-            # for sql in sql_queries:
-                # # let us find the relevant attributes
-                # sel_attrs = []
-                # for table in tables:
-                    # if table in sql:
-                        # attributes = str(tables[table])
-                        # # convert attributes to a string
-                        # attributes = attributes.replace("{", "")
-                        # attributes = attributes.replace("}", "")
-                        # # messes up the selects
-                        # attributes = attributes.replace("'", "")
-                        # attributes = attributes.replace(",", "")
-                        # # just add each of them
-                        # all_attrs = attributes.split()
-                        # # for each of these, need to add the name.alias guys
-                        # for idx, _ in enumerate(all_attrs):
-                            # all_attrs[idx] = table + "." + all_attrs[idx]
-                        # sel_attrs += all_attrs
+            sentence_it = PGIterator(sql_queries, args)
+            # let us just try to do both
+            sentences_list = list(sentence_it)
+            f = open(sentences_fname + ".txt", "w")
+            start = time.time()
+            for sentence in sentences_list:
+                # s is a list that should be converted to a sentence
+                out = ""
+                for word_i, word in enumerate(sentence):
+                    out += word
+                    if word_i != len(sentence)-1:
+                        out += " "
+                    else:
+                        out += "\n"
+                    f.write(out)
+            f.close()
+            print("writing out to file took: ", time.time() - start)
 
-                # select = ""
-                # for i, sa in enumerate(sel_attrs):
-                    # select += sa
-                    # if (i != len(sel_attrs)-1):
-                        # select += ","
+            # try to write out in pickle form as well. this seems to
+            # arbitrarily fail sometimes?
+            try:
+                with open(sentences_fname+".pickle", "wb") as f:
+                    f.write(pickle.dumps(sentences_list))
+                sentences = sentences_list
+            except:
+                print("pickle.dumps failed:(")
+                sentences = LineSentence(sentences_fname)
+                pdb.set_trace()
 
-                # res_attrs, rows = get_sql_rows(sql, select)
-                # preprocess_rows(sentences, rows, res_attrs)
-                # print("num sentences: ", len(sentences))
-
-        elif args.sql is not None:
-            print("will find sentences from sql: ")
-            print(args.sql)
-            # update sententences
-            attrs, rows = get_sql_rows(args.sql)
-            preprocess_rows(sentences, rows, attrs)
-            pdb.set_trace()
+            print("pickle.dumps successful!")
         else:
             assert False
 
-        print("going to write out sentences: ", sentences_fname)
-        print("num sentences: ", len(sentences))
-        try:
-            if not args.sentence_gen:
-                with open(sentences_fname, "wb") as f:
-                    f.write(pickle.dumps(sentences))
-        except:
-            pdb.set_trace()
-
     train(sentences)
 
-def preprocess_rows(sentences, rows, attrs):
-    '''
-    fills up sentences with rows.
-    '''
-    print(attrs)
-    def handle_sentence(sentence):
-        sentence = []
-        for i, word in enumerate(row):
-            if "id" in attrs[i] and args.no_id:
-                # print("skipping ", attrs[i])
-                continue
-            if word != None:
-                if args.split_words:
-                    # This doesn't seem what we want for multi-word things as
-                    # in keywords. Especially, if we need to match LIKE
-                    # statements on that...
-                    all_words = str(word).split()
-                    if len(all_words) > 6:
-                        continue
-                    for w in all_words:
-                        w = preprocess_word(w, exclude_the=args.exclude_the,
-                                exclude_nums=args.exclude_nums)
-                        sentence.append(w)
-                else:
-                    w = preprocess_word(str(word), exclude_the=args.exclude_the,
-                            exclude_nums=args.exclude_nums)
-                    sentence.append(w)
-        return sentence
-
-    for row_num, row in enumerate(rows):
-        if row_num % 100000 == 0:
-            print("row_num: ", row_num)
-        # convert it to a sentence
-        if args.train_pairs:
-           pair_words  = list(itertools.combinations(row, 2))
-           pdb.set_trace()
-           for pair in pair_words:
-               sentences.append(handle_sentence(pair))
-        else:
-            sentences.append(handle_sentence(row))
-
 def get_saved_data_name(name_suffix):
-    return args.data_dir + "/" + get_name(name_suffix) + ".json"
+    name = args.data_dir + "/" + get_name(name_suffix)
+    return name
 
 def deterministic_hash(string):
     return int(hashlib.sha1(str(string).encode("utf-8")).hexdigest(), 16)

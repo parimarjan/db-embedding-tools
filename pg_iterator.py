@@ -5,6 +5,8 @@ from utils.utils import *
 from collections import defaultdict
 from job_parse import JOBQuery
 
+MAX_WORD_LEN = 14
+
 class PGIterator:
     """Class to implement an iterator
     of powers of two"""
@@ -20,16 +22,12 @@ class PGIterator:
 
     def __next__(self):
         return next(self.sentences)
-        # test = next(self.sentences)
-        # print(test)
-        # pdb.set_trace()
 
     def sentence_generator(self, sql_queries, args):
         '''
         Takes a bunch of sql queries, and generates one sentence at a time, using
         whatever rules have been specified in the args.
         '''
-        print("sentence generator!")
         def find_relevant_attributes():
             queries = []
             # key: table_name, value: list of attributes
@@ -78,10 +76,14 @@ class PGIterator:
                         if len(all_words) > 6:
                             continue
                         for w in all_words:
+                            if (len(w) > MAX_WORD_LEN):
+                                continue
                             w = preprocess_word(w, exclude_the=args.exclude_the,
                                     exclude_nums=args.exclude_nums)
                             sentence.append(w)
                     else:
+                        if (len(word) > MAX_WORD_LEN):
+                            continue
                         w = preprocess_word(str(word), exclude_the=args.exclude_the,
                                 exclude_nums=args.exclude_nums)
                         sentence.append(w)
