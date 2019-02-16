@@ -1,5 +1,11 @@
 # DB Embedding Tools
 
+## Installation
+
+```bash
+$ pip install -r requirements.txt
+```
+
 ## Usage
 
 To train the wordvec model given a db, and a set of queries in .sql files in
@@ -20,7 +26,9 @@ To generate features from the given model, do:
 
 ```base
 $ mkdir features
-$ python3 gen_features.py --data_dir MODEL/LOCATION --model_name MODEL_YOU_TRAINED_BEFORE --embedding_len EMBEDDING_LEN_USED_FOR_MODEL --add_count
+$ python3 gen_features.py --data_dir MODEL/LOCATION --model_name
+MODEL_YOU_TRAINED_BEFORE --embedding_len EMBEDDING_LEN_USED_FOR_MODEL
+--add_count
 ```
 
 ## Notes:
