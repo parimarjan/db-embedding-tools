@@ -130,12 +130,11 @@ class PGIterator:
             if args.relevant_selects:
                 select = get_relevant_select(tables, sql)
             query = sql.replace("*", select)
-            print(query)
             cursor, conn = get_cursor(query)
             # go over every row in the cursor, and yield all valid sentences
             attrs = None
             for row_num, row in enumerate(cursor):
-                if row_num % 100000 == 0:
+                if row_num % 1000000 == 0:
                     print("row_num: ", row_num)
                 if attrs is None:
                     descr = cursor.description

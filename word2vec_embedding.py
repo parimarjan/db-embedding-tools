@@ -36,14 +36,19 @@ def read_flags():
 
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--all_attributes", action="store_true")
-    parser.add_argument("--no_id", action="store_true")
+    parser.add_argument("--no_id", action="store_false")
     parser.add_argument("--sample_prob", type=float, required=False,
             default=0.1)
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--split_words", action="store_true")
+
+    parser.add_argument("--split_words", action="store_false")
+
     parser.add_argument("--train_pairs", action="store_true")
-    parser.add_argument("--exclude_the", action="store_true")
+    parser.add_argument("--exclude_the", action="store_false")
+
+    # we don't usually want to do this (...)
     parser.add_argument("--exclude_nums", action="store_true")
+
     parser.add_argument("--regen_sentences", action="store_true")
     parser.add_argument("--sentence_gen", action="store_true")
     parser.add_argument("--relevant_selects", action="store_true")
@@ -109,6 +114,8 @@ def train(sentences):
     print(model)
     # access vector for one word
     # save model
+    # trim unneeded model memory = use (much) less RAM
+    model.init_sims(replace=True)
     model.save(args.data_dir + args.model_name)
     pdb.set_trace()
     # load model
@@ -218,35 +225,35 @@ def main():
             for fn in glob.glob(args.sql_dir + "/*.sql"):
                 with open(fn, "r") as f:
                     sql_queries.append(f.read())
+            sentences = list(PGIterator(sql_queries, args))
+            # for sql in sql_queries:
+                # # let us find the relevant attributes
+                # sel_attrs = []
+                # for table in tables:
+                    # if table in sql:
+                        # attributes = str(tables[table])
+                        # # convert attributes to a string
+                        # attributes = attributes.replace("{", "")
+                        # attributes = attributes.replace("}", "")
+                        # # messes up the selects
+                        # attributes = attributes.replace("'", "")
+                        # attributes = attributes.replace(",", "")
+                        # # just add each of them
+                        # all_attrs = attributes.split()
+                        # # for each of these, need to add the name.alias guys
+                        # for idx, _ in enumerate(all_attrs):
+                            # all_attrs[idx] = table + "." + all_attrs[idx]
+                        # sel_attrs += all_attrs
 
-            for sql in sql_queries:
-                # let us find the relevant attributes
-                sel_attrs = []
-                for table in tables:
-                    if table in sql:
-                        attributes = str(tables[table])
-                        # convert attributes to a string
-                        attributes = attributes.replace("{", "")
-                        attributes = attributes.replace("}", "")
-                        # messes up the selects
-                        attributes = attributes.replace("'", "")
-                        attributes = attributes.replace(",", "")
-                        # just add each of them
-                        all_attrs = attributes.split()
-                        # for each of these, need to add the name.alias guys
-                        for idx, _ in enumerate(all_attrs):
-                            all_attrs[idx] = table + "." + all_attrs[idx]
-                        sel_attrs += all_attrs
+                # select = ""
+                # for i, sa in enumerate(sel_attrs):
+                    # select += sa
+                    # if (i != len(sel_attrs)-1):
+                        # select += ","
 
-                select = ""
-                for i, sa in enumerate(sel_attrs):
-                    select += sa
-                    if (i != len(sel_attrs)-1):
-                        select += ","
-
-                res_attrs, rows = get_sql_rows(sql, select)
-                preprocess_rows(sentences, rows, res_attrs)
-                print("num sentences: ", len(sentences))
+                # res_attrs, rows = get_sql_rows(sql, select)
+                # preprocess_rows(sentences, rows, res_attrs)
+                # print("num sentences: ", len(sentences))
 
         elif args.sql is not None:
             print("will find sentences from sql: ")
@@ -258,9 +265,14 @@ def main():
         else:
             assert False
 
-        # print("going to write out sentences: ", sentences_fname)
-        # with open(sentences_fname, "wb") as f:
-            # f.write(pickle.dumps(sentences))
+        print("going to write out sentences: ", sentences_fname)
+        print("num sentences: ", len(sentences))
+        try:
+            if not args.sentence_gen:
+                with open(sentences_fname, "wb") as f:
+                    f.write(pickle.dumps(sentences))
+        except:
+            pdb.set_trace()
 
     train(sentences)
 
@@ -299,6 +311,7 @@ def preprocess_rows(sentences, rows, attrs):
         # convert it to a sentence
         if args.train_pairs:
            pair_words  = list(itertools.combinations(row, 2))
+           pdb.set_trace()
            for pair in pair_words:
                sentences.append(handle_sentence(pair))
         else:
@@ -319,7 +332,7 @@ def get_name(name_suffix):
     if args.sql_dir is not None:
         key_vals += args.sql_dir
     name = str(deterministic_hash(str(key_vals)))[1:4] +"-"+name_suffix
-    name += args.model_name
+    # name += args.model_name
     name += str(args.train_pairs)
     name += str(args.exclude_the)
     name += str(args.exclude_nums)
