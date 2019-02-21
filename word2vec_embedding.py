@@ -42,6 +42,7 @@ def read_flags():
     parser.add_argument("--sample_prob", type=float, required=False,
             default=0.1)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--no_preprocess_word", action="store_true")
 
     parser.add_argument("--split_words", action="store_false")
 
@@ -124,7 +125,6 @@ def train(sentences):
     # trim unneeded model memory = use (much) less RAM
     model.init_sims(replace=True)
     model.save(args.data_dir + args.model_name)
-    # pdb.set_trace()
     # load model
     # new_model = Word2Vec.load(args.data_dir + args.model_name)
     # print(new_model)
@@ -237,6 +237,13 @@ def main():
                 pdb.set_trace()
 
             print("pickle.dumps successful!")
+
+        elif args.sql is not None:
+            print("sql: ", args.sql)
+            sql_queries = [args.sql]
+            sentence_it = PGIterator(sql_queries, args)
+            # let us just try to do both
+            sentences = list(sentence_it)
         else:
             assert False
 

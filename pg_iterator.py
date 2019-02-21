@@ -78,15 +78,17 @@ class PGIterator:
                         for w in all_words:
                             if (len(w) > MAX_WORD_LEN):
                                 continue
-                            w = preprocess_word(w, exclude_the=args.exclude_the,
-                                    exclude_nums=args.exclude_nums)
+                            if not args.no_preprocess_word:
+                                w = preprocess_word(w, exclude_the=args.exclude_the,
+                                        exclude_nums=args.exclude_nums)
                             sentence.append(w)
                     else:
                         if (len(word) > MAX_WORD_LEN):
                             continue
-                        w = preprocess_word(str(word), exclude_the=args.exclude_the,
-                                exclude_nums=args.exclude_nums)
-                        sentence.append(w)
+                        if not args.no_preprocess_word:
+                            word = preprocess_word(str(word), exclude_the=args.exclude_the,
+                                    exclude_nums=args.exclude_nums)
+                        sentence.append(word)
             return sentence
 
         def get_relevant_select(tables, sql):

@@ -6,6 +6,7 @@ import copy
 import numpy as np
 import glob
 import string
+import pdb
 
 def cosine_similarity_vec(vec1, vec2):
     cosine_similarity = np.dot(vec1, vec2)/(np.linalg.norm(vec1)*
@@ -47,7 +48,9 @@ def get_match_vec(wv, pattern):
 def clear_terminal_output():
     os.system('clear')
 
-def preprocess_word(word, exclude_nums=False, exclude_the=False):
+def preprocess_word(word, exclude_nums=False, exclude_the=False,
+        exclude_words=[], min_len=0):
+    word = str(word)
     # no punctuation
     exclude = set(string.punctuation)
     # exclude the as well
@@ -62,9 +65,16 @@ def preprocess_word(word, exclude_nums=False, exclude_the=False):
 
     # make it lowercase
     word = word.lower()
+    final_words = []
 
-    # should we get rid of the integers?
-    return word
+    for w in word.split():
+        if w in exclude_words:
+            continue
+        if len(w) < min_len:
+            continue
+        final_words.append(w)
+
+    return " ".join(final_words)
 
 def to_variable(arr, use_cuda=False):
     if isinstance(arr, list) or isinstance(arr, tuple):
