@@ -24,6 +24,7 @@ import seaborn as sns
 import os
 import enchant
 import random
+import hashlib
 
 KEYWORD_SELECT_TMP = """SELECT title.title
 FROM movie_keyword,
@@ -33,6 +34,7 @@ WHERE movie_keyword.keyword_id = keyword.id
 AND movie_keyword.movie_id = title.id
 AND keyword.keyword = '{keyword}'"""
 
+colors = ['#1f77b4', '#d62728', "#2ca02c", "#ff7f0e", "#9467bd"]
 
 def find_vector_containing(string):
     keys = model.keys()
@@ -62,31 +64,30 @@ def get_all_rows(sql_query):
     print("returning {} rows".format(len(rows)))
     return attrs, rows
 
+def deterministic_hash(string):
+    return int(hashlib.sha1(str(string).encode("utf-8")).hexdigest(), 16)
+
 def get_name(name):
     suffix = str(args.no_pca_tsne) + "prob-" + str(args.random_prob) \
             + "exclude-english-" + str(args.exclude_english)
-    suffix = hash(suffix)[0:3]
+    suffix = str(deterministic_hash(suffix))[0:3]
     return name + suffix
 
-def plot_subset(df, subset, name = "test", subset_label="subset"):
+def plot_subset(df, subsets, name = "test", subset_labels=["subset"]):
     '''
     df has the embedding. subset is a bunch of words from within the embedding
     which will be colored brightly, and the rest would be colored a drab gray.
     '''
     print("plot subset!")
     name = get_name(name)
+    for i, subset in enumerate(subsets):
+        subset_label = subset_labels[i]
+        df.loc[df["words"].isin(subset), ["labels"]] = subset_label
 
-    labels = []
-    label_ints = []
-    for w in df["words"]:
-        if w in subset:
-            labels.append(subset_label)
-            label_ints.append(1)
-        else:
-            labels.append("others")
-            label_ints.append(0)
-    df["labels"] = labels
-    df["label_ints"] = label_ints
+    # save the dataframe as name
+    fname = get_name(name) + "labeled-df" + ".pickle"
+    with open(fname, "wb") as f:
+        f.write(pickle.dumps(df))
 
     plot_projections(name, df)
 
@@ -196,44 +197,72 @@ def get_pickle_name(name):
         name += "-rand-"+ str(args.random_prob)
     return outdir + "/" + name + ".pickle"
 
-def plot_projections(name, df):
+def plot_projections_old(name, df):
     name = get_name(name)
     outdir = args.sql_dir
 
-    fname = outdir + name + ".png"
+    fname = outdir + "/" + name + ".png"
 
     # plots each label too
     groups = df.groupby('labels')
     # Plot
     fig, ax = plt.subplots()
     ax.margins(0.05) # Optional, just adds 5% padding to the autoscaling
-    for name, group in groups:
-        # alpha = 0.05
-        # ms = 2
-        if len(group) < 1000:
-            alpha = 1.0
-            ms = 4
-        else:
-            alpha = 0.05
-            ms = 2
+    for i, (name, group) in enumerate(groups):
+        alpha = 0.05
+        ms = 2
 
         ax.plot(group.x, group.y, marker='o', linestyle='', ms=ms,
                 label=name, alpha=alpha)
 
     ax.legend(loc="best")
     print('saving file: ', fname)
+    plt.tight_layout()
     plt.savefig(fname)
     plt.close()
 
-    # FIXME: try more.
-    # print("plot projections with catplot!")
-    # seaborn is really slow :|
-    # sns_plot = sns.catplot(x="x", y="y", hue="labels", kind="swarm",
-            # data=df)
-    # sns_plot = sns.catplot(x="x", y="y", hue="labels",
-            # data=df)
-    # print("saving ", fname)
-    # sns_plot.savefig(fname)
+def plot_projections(name, df):
+    name = get_name(name)
+    outdir = args.sql_dir
+
+    # fname = outdir + "/" + name + ".pdf"
+    fname = outdir + "/" + name + ".png"
+    plt.figure(figsize=(12, 12))
+    plt.grid(linestyle='dotted', zorder=-100)
+
+    # what is this doing!!
+    # plt.scatter([10000], [10000], 150.0, linewidth=0, marker='o', alpha=0.8, color=colors[0])
+    # plt.scatter([10000], [10000], 150.0, linewidth=0, marker='o', alpha=0.8, color=colors[1])
+
+    # plt.xlim([-250, 8650])
+    # plt.ylim([-2, 37])
+
+    # plots each label too
+    groups = df.groupby('labels')
+    # Plot
+    fig, ax = plt.subplots()
+    # ax.margins(0.05) # Optional, just adds 5% padding to the autoscaling
+    legends = []
+    scatters = []
+    for i, (name, group) in enumerate(groups):
+        scatters.append(plt.scatter(group.x, group.y, linewidth=0, marker='o',
+                # alpha=0.1, color=colors[i], zorder=4, s=2)
+                alpha=1.0, color=colors[i], zorder=4, s=2))
+        legends.append(name)
+
+    print('saving file: ', fname)
+    legends = plt.legend(legends, frameon=True, loc=2)
+    leg_texts = legends.get_texts()
+    plt.setp(leg_texts, fontsize='x-large')
+
+    # change alpha after
+    for scat in scatters:
+        scat.set_alpha(0.1)
+
+    plt.tight_layout()
+    plt.savefig(fname,
+            bbox_inches='tight', pad_inches=0)
+    plt.close()
 
 def make_embedding(model, sql_queries):
     '''
@@ -440,7 +469,7 @@ for fn in glob.glob(args.sql_dir + "/*.sql"):
             label_queries.append((label, f.read()))
 
 # as long as the queries are same + sample prob, take name
-emb_fn = gen_name(args.sql_dir + "/embeddings")
+emb_fn = get_name(args.sql_dir + "/embeddings")
 emb_fn += ".pickle"
 if not os.path.exists(emb_fn):
     embeddings = make_embedding(wv, unlabeled_queries)
@@ -452,6 +481,68 @@ else:
         embeddings = pickle.loads(f.read())
 
 print("now time to generate labels!")
+PERPLEXITIES_TO_USE = ["1000"]
+
+ROOT_DIR_LABEL_QUERIES = False
+if ROOT_DIR_LABEL_QUERIES:
+    for q in label_queries:
+        # get a new df
+        label = q[0]
+        query = q[1]
+        if "1000" in query:
+            query = query.replace("1000", "10000")
+        # now we will color this subset from the given df
+        _, subset_words = get_processed_words(wv, query)
+
+        for k, v in embeddings.items():
+            df = v.copy(deep=True)
+            # we are going to go over all label queries and update accordingly
+            use_embedding = False
+            for p in PERPLEXITIES_TO_USE:
+                if p in k:
+                    use_embedding = True
+            if not use_embedding:
+                print("skipping: ", k)
+                continue
+
+            name = k + "-" + label
+            plot_subset(df, [subset_words], name=name, subset_labels=[label])
+
+# prepare each of name, [subset_words], [subset_labels] groups
+for dn in glob.iglob(args.sql_dir + "/*"):
+    if not os.path.isfile(dn) and "label" in dn:
+        dir_name = os.path.basename(dn)
+        # collect all the queries
+        cur_label_queries = []
+        cur_labels = []
+        cur_subsets = []
+        for fn in glob.glob(dn + "/*.sql"):
+            with open(fn, "r") as f:
+                label = os.path.basename(fn).replace(".sql", "")
+                cur_label_queries.append((label, f.read()))
+        if len(cur_label_queries) == 0:
+            continue
+
+        # now ready to deal with all the query-label pairs collected by us
+        for (label, query) in cur_label_queries:
+            _, subset_words = get_processed_words(wv, query)
+            cur_labels.append(label)
+            cur_subsets.append(subset_words)
+
+        # now plot time
+        for k, v in embeddings.items():
+            df = v.copy(deep=True)
+            # we are going to go over all label queries and update accordingly
+            use_embedding = False
+            for p in PERPLEXITIES_TO_USE:
+                if p in k:
+                    use_embedding = True
+            if not use_embedding:
+                print("skipping: ", k)
+                continue
+
+            name = dir_name + "/" + k + "-" + "-" + str(cur_labels)
+            plot_subset(df, cur_subsets, name=name, subset_labels=cur_labels)
 
 pdb.set_trace()
 
