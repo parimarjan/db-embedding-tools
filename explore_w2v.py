@@ -34,7 +34,18 @@ WHERE movie_keyword.keyword_id = keyword.id
 AND movie_keyword.movie_id = title.id
 AND keyword.keyword = '{keyword}'"""
 
-colors = ['#1f77b4', '#d62728', "#2ca02c", "#ff7f0e", "#9467bd"]
+colors = ['#d62728', "#2ca02c", "#ff7f0e", "#9467bd"]
+# colors = ["#2ca02c", "#ff7f0e", "#9467bd"]
+# other_color = '#1f77b4'
+other_color = 'gray'
+red = '#d62728'
+blue = '#1f77b4'
+
+country_group_order = ["usa", "france", "china", "other"]
+country_group_colors = [red, blue, "#2ca02c", other_color]
+
+genre_group_order = ["romance", "scifi", "other"]
+genre_group_colors = [red, blue, other_color]
 
 def find_vector_containing(string):
     keys = model.keys()
@@ -84,14 +95,29 @@ def plot_subset(df, subsets, name = "test", subset_labels=["subset"]):
         subset_label = subset_labels[i]
         df.loc[df["words"].isin(subset), ["labels"]] = subset_label
 
-    # save the dataframe as name
-    fname = get_name(name) + "labeled-df" + ".pickle"
-    with open(fname, "wb") as f:
-        f.write(pickle.dumps(df))
 
     plot_projections(name, df)
 
 def get_processed_words(model, query):
+    # first check if this sql has been executed before!
+
+    query_hash = str(deterministic_hash(query))[0:4]
+    Xname = query_hash + "X" + ".pickle"
+    words_name = query_hash + "words" + ".pickle"
+
+    # first, maybe we processed this already?
+    if os.path.exists(words_name):
+        print("get processed words: already processed before!")
+        print("returning: ", words_name)
+        words = None
+        X = None
+        with open(words_name, "rb") as f:
+            words = pickle.loads(f.read())
+        with open(Xname, "rb") as f:
+            X = pickle.loads(f.read())
+        assert len(X) == len(words)
+        return X, words
+
     _, rows = get_all_rows(query)
     X = []
     words = []
@@ -125,6 +151,14 @@ def get_processed_words(model, query):
 
     print(len(words))
     assert len(words) == len(X)
+
+    # save pickle files
+    with open(Xname, "wb") as f:
+        f.write(pickle.dumps(X))
+
+    with open(words_name, "wb") as f:
+        f.write(pickle.dumps(words))
+
     return X, words
 
 def make_projection(model, query):
@@ -197,38 +231,15 @@ def get_pickle_name(name):
         name += "-rand-"+ str(args.random_prob)
     return outdir + "/" + name + ".pickle"
 
-def plot_projections_old(name, df):
-    name = get_name(name)
-    outdir = args.sql_dir
-
-    fname = outdir + "/" + name + ".png"
-
-    # plots each label too
-    groups = df.groupby('labels')
-    # Plot
-    fig, ax = plt.subplots()
-    ax.margins(0.05) # Optional, just adds 5% padding to the autoscaling
-    for i, (name, group) in enumerate(groups):
-        alpha = 0.05
-        ms = 2
-
-        ax.plot(group.x, group.y, marker='o', linestyle='', ms=ms,
-                label=name, alpha=alpha)
-
-    ax.legend(loc="best")
-    print('saving file: ', fname)
-    plt.tight_layout()
-    plt.savefig(fname)
-    plt.close()
-
 def plot_projections(name, df):
     name = get_name(name)
     outdir = args.sql_dir
 
-    # fname = outdir + "/" + name + ".pdf"
-    fname = outdir + "/" + name + ".png"
-    plt.figure(figsize=(12, 12))
-    plt.grid(linestyle='dotted', zorder=-100)
+    fname = outdir + "/" + name
+
+    pickle_name = fname + "df.pickle"
+    with open(pickle_name, "wb") as f:
+        f.write(pickle.dumps(df))
 
     # what is this doing!!
     # plt.scatter([10000], [10000], 150.0, linewidth=0, marker='o', alpha=0.8, color=colors[0])
@@ -239,29 +250,66 @@ def plot_projections(name, df):
 
     # plots each label too
     groups = df.groupby('labels')
+    # pdb.set_trace()
+
     # Plot
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(4,4))
+    ax.get_xaxis().set_visible(False)
+    ax.get_yaxis().set_visible(False)
+    # plt.figure(figsize=(4, 4))
+
     # ax.margins(0.05) # Optional, just adds 5% padding to the autoscaling
     legends = []
     scatters = []
-    for i, (name, group) in enumerate(groups):
-        scatters.append(plt.scatter(group.x, group.y, linewidth=0, marker='o',
-                # alpha=0.1, color=colors[i], zorder=4, s=2)
-                alpha=1.0, color=colors[i], zorder=4, s=2))
-        legends.append(name)
+
+    SIZE = 5
+    # pdb.set_trace()
+    if "usa" in groups.groups.keys():
+        for i, name in enumerate(country_group_order):
+            group = groups.get_group(name)
+            col = country_group_colors[i]
+            # set alpha 1.0 initially, and then change it to 0.1 so label has
+            # higher alpha
+            scatters.append(plt.scatter(group.x, group.y, linewidth=0, marker='o',
+                    alpha=1.0, color=col, zorder=4, s=SIZE))
+            legends.append(name)
+    elif "romance" in groups.groups.keys():
+        for i, name in enumerate(genre_group_order):
+            group = groups.get_group(name)
+            col = genre_group_colors[i]
+            # set alpha 1.0 initially, and then change it to 0.1 so label has
+            # higher alpha
+            scatters.append(plt.scatter(group.x, group.y, linewidth=0, marker='o',
+                    alpha=1.0, color=col, zorder=4, s=SIZE))
+            legends.append(name)
+
+    else:
+        for i, (name, group) in enumerate(groups):
+            # set alpha 1.0 initially, and then change it to 0.1 so label has
+            # higher alpha
+            scatters.append(plt.scatter(group.x, group.y, linewidth=0, marker='o',
+                    alpha=1.0, color=colors[i], zorder=4, s=SIZE))
+            legends.append(name)
 
     print('saving file: ', fname)
-    legends = plt.legend(legends, frameon=True, loc=2)
-    leg_texts = legends.get_texts()
-    plt.setp(leg_texts, fontsize='x-large')
+
+    # if "usa" in legends:
+        # legends = ["usa", "france", "china", "others"]
+
+    legends = plt.legend(legends, frameon=False, loc=2, markerscale=5,
+            fontsize=8)
 
     # change alpha after
     for scat in scatters:
         scat.set_alpha(0.1)
 
     plt.tight_layout()
-    plt.savefig(fname,
+
+    plt.savefig(fname + ".png",
             bbox_inches='tight', pad_inches=0)
+    plt.savefig(fname + ".pdf",
+            bbox_inches='tight', pad_inches=0)
+
     plt.close()
 
 def make_embedding(model, sql_queries):
@@ -300,7 +348,7 @@ def make_embedding(model, sql_queries):
                 # add stuff for the dim reduction step
                 X.append(wv[k])
                 names.append(k)
-                labels.append("other")
+                labels.append("others")
 
     print("total data points: ", len(X))
     X = np.array(X)
@@ -482,31 +530,6 @@ else:
 
 print("now time to generate labels!")
 PERPLEXITIES_TO_USE = ["1000"]
-
-ROOT_DIR_LABEL_QUERIES = False
-if ROOT_DIR_LABEL_QUERIES:
-    for q in label_queries:
-        # get a new df
-        label = q[0]
-        query = q[1]
-        if "1000" in query:
-            query = query.replace("1000", "10000")
-        # now we will color this subset from the given df
-        _, subset_words = get_processed_words(wv, query)
-
-        for k, v in embeddings.items():
-            df = v.copy(deep=True)
-            # we are going to go over all label queries and update accordingly
-            use_embedding = False
-            for p in PERPLEXITIES_TO_USE:
-                if p in k:
-                    use_embedding = True
-            if not use_embedding:
-                print("skipping: ", k)
-                continue
-
-            name = k + "-" + label
-            plot_subset(df, [subset_words], name=name, subset_labels=[label])
 
 # prepare each of name, [subset_words], [subset_labels] groups
 for dn in glob.iglob(args.sql_dir + "/*"):

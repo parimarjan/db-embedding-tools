@@ -7,6 +7,18 @@ import numpy as np
 import glob
 import string
 import pdb
+import hashlib
+
+def deterministic_hash(string):
+    return int(hashlib.sha1(str(string).encode("utf-8")).hexdigest(), 16)
+
+def db_vacuum(conn, cur):
+    old_isolation_level = conn.isolation_level
+    conn.set_isolation_level(0)
+    query = "VACUUM ANALYZE"
+    cur.execute(query)
+    conn.set_isolation_level(old_isolation_level)
+    conn.commit()
 
 def cosine_similarity_vec(vec1, vec2):
     cosine_similarity = np.dot(vec1, vec2)/(np.linalg.norm(vec1)*

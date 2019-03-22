@@ -4,6 +4,7 @@ import itertools
 from utils.utils import *
 from collections import defaultdict
 from job_parse import JOBQuery
+import random
 
 MAX_WORD_LEN = 14
 
@@ -61,8 +62,23 @@ class PGIterator:
 
             return tables
 
-        def handle_sentence(sentence, attrs):
+        def handle_sentence(row, attrs):
+            '''
+            FIXME: handle special cases better.
+            '''
+            sentences = []
             sentence = []
+
+            if args.synthetic_db_debug:
+                # choose a random word, and add all the words in the row as
+                # a sentence with this random word.
+                # rand_word = str(random.random())
+                # rand_word = str(float(row[1])*1000)
+                rand_word = str(row[1] + row[2])
+                sentences.append([rand_word, row[1]])
+                sentences.append([rand_word, row[2]])
+                return sentences
+
             for i, word in enumerate(row):
                 if "id" in attrs[i] and args.no_id:
                     # print("skipping ", attrs[i])
@@ -89,7 +105,7 @@ class PGIterator:
                             word = preprocess_word(str(word), exclude_the=args.exclude_the,
                                     exclude_nums=args.exclude_nums)
                         sentence.append(word)
-            return sentence
+            return [sentence]
 
         def get_relevant_select(tables, sql):
             # let us find the relevant attributes
@@ -146,11 +162,14 @@ class PGIterator:
                     for d in descr:
                         attrs.append(d[0])
                 if args.train_pairs:
-                   pair_words  = list(itertools.combinations(row, 2))
-                   for pair in pair_words:
-                       yield handle_sentence(pair, attrs)
+                   assert False, "use same function"
+                   # pair_words  = list(itertools.combinations(row, 2))
+                   # for pair in pair_words:
+                       # yield handle_sentence(pair, attrs)
                 else:
-                    yield handle_sentence(row, attrs)
+                    sentences = handle_sentence(row, attrs)
+                    for cur_sentence in sentences:
+                        yield cur_sentence
 
             #preprocess_rows(sentences, rows, res_attrs)
             cursor.close()
