@@ -53,6 +53,7 @@ def read_flags():
     parser.add_argument("--exclude_nums", action="store_true")
 
     parser.add_argument("--regen_sentences", action="store_true")
+    parser.add_argument("--synthetic_db_debug", action="store_true")
     parser.add_argument("--sentence_gen", action="store_true")
     parser.add_argument("--relevant_selects", action="store_true")
     parser.add_argument("--no_pickle", action="store_false")
@@ -252,9 +253,6 @@ def main():
 def get_saved_data_name(name_suffix):
     name = args.data_dir + "/" + get_name(name_suffix)
     return name
-
-def deterministic_hash(string):
-    return int(hashlib.sha1(str(string).encode("utf-8")).hexdigest(), 16)
 
 def get_name(name_suffix):
     # 1:4 to avoid the annoying negative sign that comes up sometimes (can't

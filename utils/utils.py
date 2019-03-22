@@ -7,6 +7,35 @@ import numpy as np
 import glob
 import string
 import pdb
+import hashlib
+import pickle
+
+def check_table_exists(cur, table_name):
+    cur.execute("select exists(select * from information_schema.tables where\
+            table_name=%s)", (table_name,))
+    return cur.fetchone()[0]
+
+def save_object(file_name, data):
+    with open(file_name, "wb") as f:
+        res = f.write(pickle.dumps(data))
+
+def load_object(file_name):
+    res = None
+    if os.path.exists(file_name):
+        with open(file_name, "rb") as f:
+            res = pickle.loads(f.read())
+    return res
+
+def deterministic_hash(string):
+    return int(hashlib.sha1(str(string).encode("utf-8")).hexdigest(), 16)
+
+def db_vacuum(conn, cur):
+    old_isolation_level = conn.isolation_level
+    conn.set_isolation_level(0)
+    query = "VACUUM ANALYZE"
+    cur.execute(query)
+    conn.set_isolation_level(old_isolation_level)
+    conn.commit()
 
 def cosine_similarity_vec(vec1, vec2):
     cosine_similarity = np.dot(vec1, vec2)/(np.linalg.norm(vec1)*
@@ -76,7 +105,7 @@ def preprocess_word(word, exclude_nums=False, exclude_the=False,
 
     return " ".join(final_words)
 
-def to_variable(arr, use_cuda=False):
+def to_variable(arr, use_cuda=True):
     if isinstance(arr, list) or isinstance(arr, tuple):
         arr = np.array(arr)
     if isinstance(arr, np.ndarray):

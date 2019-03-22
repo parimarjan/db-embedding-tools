@@ -12,12 +12,18 @@ class SimpleRegression(torch.nn.Module):
         )
 
         self.layer2 = nn.Sequential(
+            nn.Linear(n_hidden, n_hidden, bias=True),
+            nn.ReLU()
+        )
+
+        self.layer3 = nn.Sequential(
             nn.Linear(n_hidden, n_output, bias=True),
         )
 
     def forward(self, x):
         output = self.layer1(x)
         output = self.layer2(output)
+        output = self.layer3(output)
         return output
 
 class SiameseNetwork(nn.Module):
