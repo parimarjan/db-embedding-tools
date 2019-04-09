@@ -1,4 +1,5 @@
 import numpy as np
+np.set_printoptions(suppress=True)
 # import pdb
 import ipdb as pdb
 import argparse
@@ -10,6 +11,7 @@ import subprocess as sp
 from gensim.models import Word2Vec
 import re
 from utils.utils import *
+from utils.db_utils import *
 
 from sklearn.linear_model import LinearRegression
 from sklearn.svm import SVR
@@ -30,29 +32,15 @@ import math
 from utils.tf_summaries import TensorboardSummaries
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import pandas as pd
-
-# PROB_ALG_NAMES = ["independent", "independent_pg", "wv_kahnemann",
-        # "wv_kahnemann_pg", "corr_kahnemann", "corr_kahnemann_pg", "rho1"]
-# PROB_ALG_NAMES = ["debug_est_correl", "debug_est_correl_pg"]
-PROB_ALG_NAMES = []
+from cardinality_estimation.algs import SVDK
 
 ALGS = ["independent", "postgres", "analytic", "wv_rho_est",
             "nn-true-marg-onehot", "nn-pg-marg-onehot", "nn-sel",
-            "nn-true-marg-wv"]
-
-# ALGS = ["independent", "postgres", "analytic", "wv_rho_est",
-            # "nn-true-marg-onehot", "nn-pg-marg-onehot", "nn-sel"]
-
-# ALGS = ["postgres", "analytic", "wv_rho_est",
-            # "nn-true-marg"]
+            "nn-true-marg-wv", "svd-sel", "svd-rho"]
 
 # FIXME: data generation script
 CREATE_TABLE_TEMPLATE = "CREATE TABLE {name} (id SERIAL, {columns})";
 INSERT_TEMPLATE = "INSERT INTO {name} ({columns}) VALUES %s";
-
-SAMPLES_SINGLE_TEMPLATE = "EXPLAIN ANALYZE SELECT COUNT(*) FROM {table} WHERE {column} {cmp_op} {val}"
-SAMPLES_CORR_TEMPLATE = "EXPLAIN ANALYZE SELECT COUNT(*) FROM {table} WHERE {column1} {cmp_op1} \
-{val1} AND {column2} {cmp_op2} {val2}"
 
 # FIXME: pass in query directly here.
 # should we be doing train_pairs?
@@ -63,91 +51,6 @@ WORDVEC_TEMPLATE = "python3 word2vec_embedding.py --sql \"{sql}\" \
 {extra_flags}"
 
 EPSILON = 0.001
-
-# STR_CMP_OPS = ["=", "IN", "LIKE"]
-STR_CMP_OPS = ["="]
-NUM_CMP_OPS = ["=", "<=", ">=", "BETWEEN"]
-
-# FIXME: general class for sample, table etc. with various precomputed
-# statistical measures
-class SelectivitySample():
-    def __init__(self, column_names, vals, cmp_ops, sel, count,
-            pg_sel=None, pg_marginal_sels=None, marginal_sels=None):
-        self.sel = sel
-        self.count = count
-        self.cmp_ops = cmp_ops
-        self.column_names = column_names
-        self.vals = []
-        self.pg_sel = pg_sel
-        # we don't need the apostrophe's - just needed it for executing on
-        # postgres
-        for v in vals:
-            self.vals.append(v.replace("'", ""))
-        self.marginal_sels = marginal_sels
-        self.pg_marginal_sels = pg_marginal_sels
-
-        # FIXME: how does this generalize to nd
-        # if args.use_true_marginals:
-            # pa = self.marginal_sels[0]
-            # pb = self.marginal_sels[1]
-        # else:
-            # pa = self.pg_marginal_sels[0]
-            # pb = self.pg_marginal_sels[0]
-
-        # normalizer = math.sqrt(pa*(1-pa)*pb*(1-pb))
-        # sel = self.sel
-        # self.true_rho = ((sel) - (pa*pb)) / normalizer
-
-    def __str__(self):
-        rep = ""
-        rep += "columns: " + str(self.column_names) + "\n"
-        rep += "operator: " + " = " + "\n"
-        rep += "values: " + str(self.vals) + "\n"
-        rep += "selectivity: " + str(self.sel) + "\n"
-        rep += "pg estimate: " + str(self.pg_sel) + "\n"
-        rep += "count: " + str(self.count) + "\n"
-        rep += "marginal_sel: " + str(self.marginal_sels) + "\n"
-        rep += "pg_marginal_sel: " + str(self.pg_marginal_sels)
-        return rep
-
-    def get_marginals(self, true_marginals=True):
-        if true_marginals:
-            return self.marginal_sels
-        else:
-            return self.pg_marginal_sels
-
-    def get_features(self, model=None, featurization_scheme="wordvec"):
-
-        features = []
-        if featurization_scheme == "wordvec":
-            assert model is not None
-            for i, v in enumerate(self.column_names):
-                cmp_op = self.cmp_ops[i]
-                for i in range(len(STR_CMP_OPS)):
-                    if STR_CMP_OPS[i] == cmp_op:
-                        features.append(1.00)
-                    else:
-                        features.append(0.00)
-
-                val = self.vals[i]
-                if val in model:
-                    features.extend(model[val])
-                else:
-                    features.extend([0]*args.embedding_size)
-        elif featurization_scheme == "onehot":
-            # FIXME: estimate total some other way.
-            total = len(model.index2word)
-            for i in range(len(self.column_names)):
-                val = self.vals[i]
-                onehot_vec = [0.00]*total
-                if val in model:
-                    idx = hash(val) % total
-                    onehot_vec[idx] = 1.00
-                # else, we just estimate it as the 0 vec
-                features.extend(onehot_vec)
-
-        return features
-
 
 # FIXME: combine in utils
 def deterministic_hash(string):
@@ -169,7 +72,7 @@ def get_correlations():
 
 def gen_results_name():
     # FIXME:
-    prefix = args.data_dir + "/" + args.db_name + args.table_name
+    prefix = args.data_dir + "/" + args.db_name + args.table_name + args.algs
     return prefix + "-results.pd"
 
 def read_flags():
@@ -202,6 +105,8 @@ def read_flags():
             default="synth1")
     parser.add_argument("--gen_data_distr", type=str, required=False,
             default="gaussian")
+    parser.add_argument("--model_type", type=str, required=False,
+            default="pmi-svd")
 
     ## neural net training vals
     parser.add_argument("--std_scale", type=int, required=False,
@@ -214,6 +119,9 @@ def read_flags():
             default=32)
     parser.add_argument("--embedding_size", type=int, required=False,
             default=10)
+    parser.add_argument("--svd-size", type=int, required=False,
+            default=5)
+
     parser.add_argument("--db_name", type=str, required=False,
             default="syntheticdb")
 
@@ -229,13 +137,15 @@ def read_flags():
     parser.add_argument("--use_true_marginals", type=int, required=False,
             default=1)
     parser.add_argument("--train_wv", type=int, required=False,
-            default=0)
+            default=1)
     # parser.add_argument("--rho_est", type=int, required=False,
             # default=1)
     parser.add_argument("--adaptive_lr", type=int, required=False,
             default=1)
     parser.add_argument("--algs", type=str, required=False,
             default=None)
+    parser.add_argument("--column_names", type=str, required=False,
+            default="col0,col1")
 
     parser.add_argument("--store_results", action="store_true")
     parser.add_argument("--use_corr", action="store_true")
@@ -304,218 +214,6 @@ def gen_data(means, covs):
 
     return list(zip(*vals))
 
-def gen_samples(cursor, dtype="str", single_col=True, corr=False):
-    def parse_explain_analyze(output):
-        est_vals = None
-        num_vals = None
-        # FIXME: generic for corr part as well.
-        for line in output:
-            line = line[0]
-            if "Seq Scan" in line:
-                for w in line.split():
-                    if "rows" in w and est_vals is None:
-                        est_vals = int(re.findall("\d+", w)[0])
-                    elif "rows" in w:
-                        num_vals = int(re.findall("\d+", w)[0])
-
-        return est_vals, num_vals
-
-    def sample_row_values(op, idx1, idx2, rows):
-        req_rows = None
-        if dtype == "str":
-            vals = []
-            for i in range(args.num_samples_per_op):
-                row = random.choice(rows)
-                val1 = row[idx1+1]
-                val2 = row[idx2+1]
-                val1 = "'" + val1.replace("'", "''") + "'"
-                val2 = "'" + val2.replace("'", "''") + "'"
-                vals.append((val1, val2))
-            return vals
-        else:
-            assert False
-            # req_rows = [r[idx+1] for r in rows]
-
-        if op == "=":
-            vals = []
-            for i in range(args.num_samples_per_op):
-                vals.append(random.choice(req_rows))
-            return vals
-        elif op == "IN":
-            # need to sample N guys every time, and then put them in a list
-            pass
-        elif op == "LIKE":
-            # need to sample a substring from one sample for each
-            pass
-        else:
-            assert False
-
-    def sample_values(op, idx, rows):
-        req_rows = None
-        if dtype == "str":
-            req_rows = []
-            for r in rows:
-                val = r[idx+1]
-                if val != None:
-                    formatted_str = "'" + val.replace("'", "''") + "'"
-                    req_rows.append(formatted_str)
-            # req_rows = ["'"+ r[idx+1].replace("'","''") + "'" for r in rows]
-        else:
-            req_rows = [r[idx+1] for r in rows]
-
-        if op == "=":
-            vals = []
-            for i in range(args.num_samples_per_op):
-                vals.append(random.choice(req_rows))
-            return vals
-        elif op == "IN":
-            # need to sample N guys every time, and then put them in a list
-            pass
-        elif op == "LIKE":
-            # need to sample a substring from one sample for each
-            pass
-        else:
-            assert False
-
-    def get_selectivity_single_predicate(col, val, op):
-        if col+val in selectivity_lookup_table:
-            est_vals, num_vals = selectivity_lookup_table[col+val]
-            return est_vals, num_vals
-
-        Q = SAMPLES_SINGLE_TEMPLATE.format(table=args.table_name,
-                column=col, cmp_op = op, val = val)
-        cursor.execute(Q)
-        exp_output = cursor.fetchall()
-        est_vals, _ = parse_explain_analyze(exp_output)
-        EXACT_COUNT_Q = Q.replace("EXPLAIN ANALYZE ", "")
-        cursor.execute(EXACT_COUNT_Q)
-        num_vals = cursor.fetchall()[0][0]
-
-        # for future!
-        selectivity_lookup_table[col+val] = (est_vals, num_vals)
-
-        return est_vals, num_vals
-
-    # FIXME: generalize to n-predicates
-    def get_selectivity_two_predicate(col1, col2, val1, val2, op):
-        # FIXME: generalize to n predicates
-        key = col1+val1+col2+val2
-        if key in selectivity_lookup_table:
-            est_vals, num_vals = selectivity_lookup_table[key]
-            return est_vals, num_vals
-
-        Q = SAMPLES_CORR_TEMPLATE.format(table=args.table_name,
-                column1=col1, cmp_op1 = op, val1 = val1,
-                column2=col2, cmp_op2 = op, val2 = val2)
-        cursor.execute(Q)
-        exp_output = cursor.fetchall()
-        est_vals, _ = parse_explain_analyze(exp_output)
-        EXACT_COUNT_Q = Q.replace("EXPLAIN ANALYZE ", "")
-        cursor.execute(EXACT_COUNT_Q)
-        num_vals = cursor.fetchall()[0][0]
-        selectivity_lookup_table[key] = (est_vals, num_vals)
-        return est_vals, num_vals
-
-    selectivity_lookup_table = {}
-    # get a random sample of values from each column so we can use it to
-    # generate sensible queries
-    Q = "SELECT * FROM {table} WHERE random() < 0.001".format(table=args.table_name)
-    cursor.execute(Q)
-    rows = cursor.fetchall()
-    # can get column names from the cursor as well
-    columns = [c.name for c in cursor.description]
-
-    Q = "SELECT COUNT(*) FROM {table}".format(table=args.table_name)
-    cursor.execute(Q)
-    total_rows = float(cursor.fetchone()[0])
-
-    samples = []
-    cmp_ops = None
-    if dtype == "str":
-        cmp_ops = STR_CMP_OPS
-    else:
-        cmp_ops = NUM_CMP_OPS
-
-    start = time.time()
-    # FIXME: not sure if single_col stuff even works now
-    if single_col:
-        for i in range(args.num_columns):
-            # col = "col" + str(i)
-            # +1 to avoid the id column
-            col = columns[i+1]
-            for op in cmp_ops:
-                vals = sample_values(op, i, rows)
-                for vali, val in enumerate(vals):
-                    if (vali % 100 == 0):
-                        print(vali)
-
-                    est_vals, num_vals = get_selectivity_single_predicate(col,
-                            val, op)
-
-                    # add the sample for training
-                    sample = SelectivitySample([col], [val], [op],
-                            num_vals / float(total_rows), num_vals,
-                            pg_sel=est_vals/float(total_rows))
-                    samples.append(sample)
-
-    print("generating single col samples took ", time.time() - start)
-
-    ## FIXME: generalize this to multiple columns
-    if not corr:
-        return samples
-
-    start = time.time()
-    i = 0
-    col1 = columns[i+1]
-    for j in range(args.num_columns):
-        # allow j = 0 as well.
-        if j == 0:
-            continue
-        col2 = columns[j+1]
-        for op in cmp_ops:
-            # TODO: different operators on both sides
-            # maybe make choosing the operator a random choice
-            # vals2 = sample_values(op, j, rows)
-            vals = sample_row_values(op, i, j, rows)
-            for k, (val1, val2) in enumerate(vals):
-                if k % 100 == 0:
-                    print("generated {} samples".format(k))
-                # first, do it for each of the single values
-                est_val1, num_val1 = get_selectivity_single_predicate(col1,
-                        val1, op)
-                est_val2, num_val2 = get_selectivity_single_predicate(col2,
-                        val2, op)
-                pgsel1 = est_val1 / float(total_rows)
-                pgsel2 = est_val2 / float(total_rows)
-                sel1 = num_val1 / float(total_rows)
-                sel2 = num_val2 / float(total_rows)
-                pg_marginal_sels = [pgsel1, pgsel2]
-                marginal_sels = [sel1, sel2]
-
-                # both predicates together
-                est_vals, num_vals = get_selectivity_two_predicate(col1,
-                        col2, val1, val2, op)
-                columns = [col1, col2]
-                vals = [val1, val2]
-                ops = [op, op]
-                sel = float(num_vals) / total_rows
-                pg_sel = float(est_vals) / total_rows
-
-                sample = SelectivitySample(columns, vals, ops, sel,
-                        num_vals, pg_sel=pg_sel,
-                        pg_marginal_sels=pg_marginal_sels,
-                        marginal_sels=marginal_sels)
-                samples.append(sample)
-
-    print("generating two col samples took ", time.time() - start)
-
-    sels = [s.sel for s in samples]
-    zeros = [s for s in samples if s.sel == 0.00]
-    print("max selectivity: ", max(sels))
-    print("num zeros: ", len(zeros))
-
-    return samples
-
 def training_loss_selectivity(pred, ytrue, batch=None, rho_est=True,
         use_true_marginals=True):
     '''
@@ -549,22 +247,39 @@ def compute_relative_loss(yhat, ytrue):
     error = 0.00
     for i, y in enumerate(ytrue):
         yh = yhat[i]
-        # diff = abs(y - yh)
-        # if (diff > y):
-            # print("true y: {}, yh: {}".format(y, yh))
-            # pdb.set_trace()
         error += abs(y - yh) / (max(EPSILON, y))
     error = error / len(yhat)
     return round(error * 100, 3)
 
-def predict_prob(X, wv, alg="independent", ytrue=None):
+def compute_abs_loss(yhat, ytrue):
+    error = np.sum(np.abs(np.array(yhat) - np.array(ytrue)))
+    error = error / len(yhat)
+    error = error * 100
+    return round(error, 3)
+
+def compute_qerror(yhat, ytrue):
+    error = 0.00
+    for i, y in enumerate(ytrue):
+        yh = yhat[i]
+        cur_error = max((yh / y), (y / yh))
+        # if cur_error > 1.00:
+            # print(cur_error, y, yh)
+            # pdb.set_trace()
+        error += cur_error
+    error = error / len(yhat)
+    return round(error, 3)
+
+def compute_weighted_error(yhat, ytrue, alpha=0.1, beta=0.1):
+    pass
+
+def predict_prob(X, embedding_model, alg="independent", ytrue=None):
     '''
     just for X having samples with 2 variables
     @alg:
         - independent
         - independent_pg
-        - wv_pg_kahnemann
-        - wv_true_kahnemann
+        - embedding_model_pg_kahnemann
+        - embedding_model_true_kahnemann
     '''
     yhat = []
     losses = []
@@ -577,10 +292,16 @@ def predict_prob(X, wv, alg="independent", ytrue=None):
             pa = marginals[0]
             pb = marginals[1]
             try:
-                rho = wv.similarity(sample.vals[0], sample.vals[1])
+                rho = embedding_model.similarity(sample.vals[0], sample.vals[1])
             except:
                 # if we don't have it in the model, then assume 0
                 rho = 0
+            normalizer = math.sqrt(pa*(1-pa)*pb*(1-pb))
+            res = rho*normalizer + pa*pb
+        elif alg == "svd-sel":
+            res = embedding_model.similarity(sample.vals[0], sample.vals[1])
+        elif alg == "svd-rho":
+            rho = embedding_model.similarity(sample.vals[0], sample.vals[1])
             normalizer = math.sqrt(pa*(1-pa)*pb*(1-pb))
             res = rho*normalizer + pa*pb
         elif alg == "debug_est_correl":
@@ -611,24 +332,13 @@ def predict_prob(X, wv, alg="independent", ytrue=None):
             print(sample.vals[0], sample.vals[1])
             print("rho: ", rho)
             print(sample)
-            print("similarity: ", wv.similarity(str(sample.vals[0]), str(sample.vals[1])))
+            print("similarity: ", embedding_model.similarity(str(sample.vals[0]), str(sample.vals[1])))
             pdb.set_trace()
             res = rho*normalizer + pa*pb
         else:
             assert False, "must be one of these algs"
         yhat.append(res)
 
-        if ytrue is not None:
-            loss = abs(res - ytrue[i])
-            losses.append(loss)
-            # print(sample)
-            # print("estimate: ", res)
-            # print("sample {}, loss: {} ".format(i, loss))
-            # print("pred: {}, true: {}, loss: {}".format(yhat[i],
-                # ytrue[i], loss))
-
-    print("max loss: ", sorted(losses)[-1])
-    print("max loss2: ", sorted(losses)[-2])
     return np.array(yhat)
 
 def predict_analytically(X, ytrue=None):
@@ -651,14 +361,6 @@ def predict_analytically(X, ytrue=None):
 
         res, err = solve_analytically(means, covs, ranges)
 
-        # FIXME: this doesn't seem to work.
-        # dist = mvn(mean=means, cov=covs)
-        # lower = list(zip(*ranges))[0]
-        # upper = list(zip(*ranges))[1]
-        # res_cdf = dist.cdf(upper) - dist.cdf(lower)
-        # print("old res: ", res_old)
-        # print("res: ", res)
-
         # FIXME: can we use err better?
         yhat.append(res)
         if ytrue is not None:
@@ -672,8 +374,8 @@ def predict_analytically(X, ytrue=None):
     print("max loss2: ", sorted(losses)[-2])
     return np.array(yhat)
 
-# FIXME: shouldn't need wv here.
-def train_and_predict_pytorch(train, test, wv, featurization_scheme="onehot",
+# FIXME: shouldn't need embedding_model here.
+def train_and_predict_pytorch(train, test, embedding_model, featurization_scheme="onehot",
         use_true_marginals=True, rho_est=True, alg_name="pytorch"):
     '''
     TODO:
@@ -682,7 +384,7 @@ def train_and_predict_pytorch(train, test, wv, featurization_scheme="onehot",
     '''
     def get_preds(samples, net):
         # after training, get predictions for selectivities
-        x = [s.get_features(wv, featurization_scheme) for s in samples]
+        x = [s.get_features(embedding_model, featurization_scheme) for s in samples]
         x = to_variable(x).float()
         pred = net(x)
         pred = pred.squeeze(1).detach().numpy()
@@ -703,11 +405,9 @@ def train_and_predict_pytorch(train, test, wv, featurization_scheme="onehot",
     name = args.db_name + args.table_name + "-" + alg_name
     tfboard = TensorboardSummaries(args.data_dir + "/tflogs/" + name +
         time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()))
-    # tfboard.add_variables([
-        # 'mb-loss'], 'train')
 
     tfboard.add_variables([
-        'train-loss', 'test-loss', 'lr'], 'test')
+        'train-loss', 'lr'], 'test')
 
     tfboard.init()
 
@@ -715,7 +415,7 @@ def train_and_predict_pytorch(train, test, wv, featurization_scheme="onehot",
     ytrain = [s.sel for s in train]
     ytest = [s.sel for s in test]
 
-    inp_len = len(train[0].get_features(wv, featurization_scheme))
+    inp_len = len(train[0].get_features(embedding_model, featurization_scheme))
     net = SimpleRegression(inp_len, inp_len*2, 1)
     optimizer = torch.optim.SGD(net.parameters(), lr=args.lr)
 
@@ -735,7 +435,7 @@ def train_and_predict_pytorch(train, test, wv, featurization_scheme="onehot",
         # FIXME: debug
         # batch = train
 
-        xbatch = [s.get_features(wv, featurization_scheme) for s in batch]
+        xbatch = [s.get_features(embedding_model, featurization_scheme) for s in batch]
         xbatch = to_variable(xbatch).float()
 
         ybatch = [s.sel for s in batch]
@@ -745,32 +445,24 @@ def train_and_predict_pytorch(train, test, wv, featurization_scheme="onehot",
         loss = loss_func(pred, ybatch, batch=batch,
                 use_true_marginals=use_true_marginals, rho_est=rho_est)
 
-        # tfboard.report(num_iter,
-            # [loss.item()], 'train')
-
         if (num_iter % 1000 == 0):
             ytrainhat = get_preds(train, net)
             ytesthat = get_preds(test, net)
-            # if (num_iter > 5000):
-                # for si, sample in enumerate(train):
-                    # print(sample.vals)
-                    # print("true: {}, pred: {}".format(sample.sel, ytrainhat[si]))
-                    # print("abs diff: ", abs(ytrain[si]-ytrainhat[si]))
-                    # print("loss: ", compute_relative_loss([ytrainhat[si]], [ytrain[si]]))
 
             train_loss = compute_relative_loss(ytrainhat, ytrain)
-            test_loss = compute_relative_loss(ytesthat, ytest)
-            if (num_iter % 100 == 0):
-                print("alg: {}, table: {}, iter: {}, mb-loss: {}, train-loss: {}, test-loss: {}" \
-                        .format(alg_name, args.table_name, num_iter, loss.item(),
-                            train_loss, test_loss))
+            # if (num_iter % 100 == 0):
+                # print("alg: {}, table: {}, iter: {}, mb-loss: {}, train-loss: {}" \
+                        # .format(alg_name, args.table_name, num_iter, loss.item(),
+                            # train_loss))
+
             if args.adaptive_lr:
                 # FIXME: should we do this for minibatch / or for train loss?
                 scheduler.step(train_loss)
 
             cur_lr = optimizer.param_groups[0]['lr']
+
             tfboard.report(num_iter,
-                [train_loss, test_loss, cur_lr], 'test')
+                [train_loss, cur_lr], 'test')
 
             if train_loss < 2.00:
                 print("breaking because training loss less than 2")
@@ -835,13 +527,15 @@ def main():
     conn = pg.connect(host=args.db_host, database=args.db_name)
     if args.verbose: print("connection succeeded")
     cur = conn.cursor()
+    db_vacuum(conn, cur)
 
     # FIXME: this only makes sense in gaussian data case, so separate out
     # data-gen stuff / stats collection stuff etc.
     # check if table exists or not. if it does not exist, then create it, and
     # gen data.
     exists = check_table_exists(cur, args.table_name)
-
+    print(args.gen_data)
+    print(exists)
     if args.gen_data or not exists:
         means, covs = get_gaussian_data_params()
         # if gen_data isn't on, then presumably, the table SHOULD already
@@ -864,35 +558,11 @@ def main():
         conn.commit()
         print("generate and inserted new data!")
 
-
     # let's run vacuum to update stats.
     db_vacuum(conn, cur)
 
-    # FIXME: not sure how much we even care about having the word2vec model.
-    model_name = "wordvec" + gen_args_hash() + ".bin"
-    # if the model exists already, then we can just load it.
-    if not os.path.exists(args.data_dir + model_name) or args.gen_data or args.train_wv:
-        # let us train the wordvec model on this data
-        print("going to train model!")
-        select_sql = "SELECT * FROM {};".format(args.table_name)
-        wv_train = WORDVEC_TEMPLATE.format(db_name = args.db_name,
-                                model_name = model_name,
-                                dir = args.data_dir,
-                                sql = select_sql,
-                                emb_size = args.embedding_size,
-                                min_count = args.min_count,
-                                extra_flags = "")
-                                # extra_flags = "--synthetic_db_debug")
-        p = sp.Popen(wv_train, shell=True)
-        p.wait()
-        print("finished training model!")
-        # load model
-        time.sleep(2)
-    else:
-        print("going to load the saved word2vec model")
-    model = Word2Vec.load(args.data_dir + model_name)
-    wv = model.wv
-    del model # frees memory
+    table_stats = TableStats(args.db_name, args.table_name, db_host =
+            args.db_host, columns_string=args.column_names)
 
     # both correlated samples, or single column samples will be stored
     # differently.
@@ -909,10 +579,37 @@ def main():
                     s.sel, s.count, s.pg_sel, s.pg_marginal_sels, s.marginal_sels)
 
     else:
-        samples = gen_samples(cur, single_col=(not args.use_corr),
-                corr=args.use_corr)
+        samples = table_stats.get_samples(num_samples=args.num_samples_per_op,
+                                          num_columns = 2)
         with open(samples_fname, "wb") as f:
             f.write(pickle.dumps(samples))
+
+    if args.train_wv:
+        model_name = "wordvec" + gen_args_hash() + ".bin"
+        # if the model exists already, then we can just load it.
+        # if not os.path.exists(args.data_dir + model_name) or args.gen_data or args.train_wv:
+        if not os.path.exists(args.data_dir + model_name):
+            # let us train the wordvec model on this data
+            print("going to train model!")
+            select_sql = "SELECT * FROM {};".format(args.table_name)
+            wv_train = WORDVEC_TEMPLATE.format(db_name = args.db_name,
+                                    model_name = model_name,
+                                    dir = args.data_dir,
+                                    sql = select_sql,
+                                    emb_size = args.embedding_size,
+                                    min_count = args.min_count,
+                                    extra_flags = "")
+                                    # extra_flags = "--synthetic_db_debug")
+            p = sp.Popen(wv_train, shell=True)
+            p.wait()
+            print("finished training model!")
+            # load model
+            time.sleep(2)
+        model = Word2Vec.load(args.data_dir + model_name)
+        embedding_model = model.wv
+        del model # frees memory
+    else:
+        assert False
 
     train, test = train_test_split(samples, test_size=args.test_size,
             random_state=args.seed)
@@ -920,12 +617,15 @@ def main():
     # note: not all the algorithms we consider even use the training set. Thus,
     # algorithms are only evaluated on the test set.
     ytrain = [s.sel for s in train]
-    ytest = [s.sel for s in test]
+    ytest = np.array([s.sel for s in test])
 
     result = {}
     result["dbname"] = args.db_name
     result["table_name"] = args.table_name
     result["samples"] = len(ytest)
+
+    svd_sel_model = None
+    svd_rho_model = None
 
     for alg in ALGS:
         if args.algs is not None:
@@ -952,9 +652,9 @@ def main():
                 marginals = True
                 rho_est = False
             else:
-                assert False, "not known nn alg"
+                continue
 
-            _, yhat = train_and_predict_pytorch(train, test, wv,
+            _, yhat = train_and_predict_pytorch(train, test, embedding_model,
                     featurization_scheme=feat_scheme,
                     use_true_marginals=marginals,
                     rho_est=rho_est, alg_name=alg)
@@ -967,15 +667,31 @@ def main():
             if not "gaussian" == args.gen_data_distr:
                 continue
             yhat = predict_analytically(test, ytrue=ytest)
+        elif "svd-rho" == alg:
+            cur_alg = SVDK(k=args.svd_size, model_type="svd-rho", true_marginals=args.use_true_marginals)
+            cur_alg.train(table_stats, train)
+            yhat = cur_alg.test(test)
+        elif "svd-sel" == alg:
+            cur_alg = SVDK(k=args.svd_size, model_type="svd-sel")
+            cur_alg.train(table_stats, train)
+            yhat = cur_alg.test(test)
         else:
-            yhat = predict_prob(test, wv, alg=alg, ytrue=ytest)
+            yhat = predict_prob(test, embedding_model, alg=alg, ytrue=ytest)
 
-        test_loss = compute_relative_loss(yhat, ytest)
+        test_rel_loss = compute_relative_loss(yhat, ytest)
+        test_abs_loss = compute_abs_loss(yhat, ytest)
+        test_qloss = compute_qerror(yhat, ytest)
+
         print("case: {}, alg: {}, samples: {}, abs_loss: {}, relative_loss: {}"\
-                .format(args.table_name, alg, len(yhat), sum(abs(yhat-ytest)), test_loss))
+                .format(args.table_name, alg, len(yhat), sum(abs(yhat-ytest)),
+                    test_rel_loss))
+        print("rel: {}, abs: {}, qerr: {}".format(test_rel_loss, test_abs_loss,
+            test_qloss))
 
         # store the results
-        result[alg] = test_loss
+        result[alg + "rel_loss"] = test_rel_loss
+        result[alg + "abs_loss"] = test_abs_loss
+        result[alg + "qloss"] = test_qloss
 
     df = pd.DataFrame([result])
     if args.store_results:
