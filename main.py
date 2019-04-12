@@ -32,7 +32,7 @@ import math
 from utils.tf_summaries import TensorboardSummaries
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import pandas as pd
-from cardinality_estimation.algs import SVDK
+from cardinality_estimation.algs import *
 
 ALGS = ["independent", "postgres", "analytic", "wv_rho_est",
             "nn-true-marg-onehot", "nn-pg-marg-onehot", "nn-sel",
@@ -272,75 +272,6 @@ def compute_qerror(yhat, ytrue):
 def compute_weighted_error(yhat, ytrue, alpha=0.1, beta=0.1):
     pass
 
-def predict_prob(X, embedding_model, alg="independent", ytrue=None):
-    '''
-    just for X having samples with 2 variables
-    @alg:
-        - independent
-        - independent_pg
-        - embedding_model_pg_kahnemann
-        - embedding_model_true_kahnemann
-    '''
-    yhat = []
-    losses = []
-    for i, sample in enumerate(X):
-        marginals = sample.get_marginals(args.use_true_marginals)
-        if alg == "independent":
-            # res = marginals[0] * marginals[1]
-            res = sample.marginal_sels[0] * sample.marginal_sels[1]
-        elif alg == "wv_rho_est":
-            pa = marginals[0]
-            pb = marginals[1]
-            try:
-                rho = embedding_model.similarity(sample.vals[0], sample.vals[1])
-            except:
-                # if we don't have it in the model, then assume 0
-                rho = 0
-            normalizer = math.sqrt(pa*(1-pa)*pb*(1-pb))
-            res = rho*normalizer + pa*pb
-        elif alg == "svd-sel":
-            res = embedding_model.similarity(sample.vals[0], sample.vals[1])
-        elif alg == "svd-rho":
-            rho = embedding_model.similarity(sample.vals[0], sample.vals[1])
-            normalizer = math.sqrt(pa*(1-pa)*pb*(1-pb))
-            res = rho*normalizer + pa*pb
-        elif alg == "debug_est_correl":
-            pa = marginals[0]
-            pb = marginals[1]
-            normalizer = math.sqrt(pa*(1-pa)*pb*(1-pb))
-            val1 = float(sample.vals[0])
-            val2 = float(sample.vals[1])
-            if (val1 + 10.0 == val2):
-                # rho = get_correlations()[1]
-                rho = get_correlations()[1] / 3.0
-            else:
-                rho = 0.0
-            res = rho*normalizer + pa*pb
-        elif alg == "corr_rho":
-            pa = marginals[0]
-            pb = marginals[1]
-            rho = get_correlations()[1]
-            normalizer = math.sqrt(pa*(1-pa)*pb*(1-pb))
-            res = rho*normalizer + pa*pb
-        elif alg == "debug":
-            pa = marginals[0]
-            pb = marginals[1]
-            normalizer = math.sqrt(pa*(1-pa)*pb*(1-pb))
-            sel = sample.sel
-            assert sel == ytrue[i]
-            rho = ((sel) - (pa*pb)) / normalizer
-            print(sample.vals[0], sample.vals[1])
-            print("rho: ", rho)
-            print(sample)
-            print("similarity: ", embedding_model.similarity(str(sample.vals[0]), str(sample.vals[1])))
-            pdb.set_trace()
-            res = rho*normalizer + pa*pb
-        else:
-            assert False, "must be one of these algs"
-        yhat.append(res)
-
-    return np.array(yhat)
-
 def predict_analytically(X, ytrue=None):
     means, covs = get_gaussian_data_params()
     yhat = []
@@ -370,8 +301,6 @@ def predict_analytically(X, ytrue=None):
                 # ytrue[i], loss, err))
             # print(sample)
 
-    print("max loss: ", sorted(losses)[-1])
-    print("max loss2: ", sorted(losses)[-2])
     return np.array(yhat)
 
 # FIXME: shouldn't need embedding_model here.
@@ -521,6 +450,19 @@ def get_gaussian_data_params():
             # just leave it as 0.
     return means, covs
 
+def get_alg(alg):
+    if alg == "independent":
+        return Independent()
+    elif alg == "analytic":
+        return Analytic()
+    elif alg == "postgres":
+        return Postgres()
+    elif alg == "svd-sel":
+         return SVDK(k=args.svd_size, model_type="svd-sel",
+                 true_marginals=args.use_true_marginals)
+    else:
+        assert False
+
 def main():
     columns = get_columns(args.num_columns)
     if args.verbose: print(columns)
@@ -624,60 +566,13 @@ def main():
     result["table_name"] = args.table_name
     result["samples"] = len(ytest)
 
-    svd_sel_model = None
-    svd_rho_model = None
+    algorithms = []
+    for alg_name in args.algs.split(","):
+        algorithms.append(get_alg(alg_name))
 
-    for alg in ALGS:
-        if args.algs is not None:
-            if alg not in args.algs:
-                continue
-        print("running ", alg)
-
-        # FIXME: combine all the attempts below into single function
-        if "nn" in alg:
-            if alg == "nn-true-marg-onehot":
-                feat_scheme = "onehot"
-                marginals = True
-                rho_est = True
-            elif alg == "nn-pg-marg-onehot":
-                feat_scheme = "onehot"
-                marginals = False
-                rho_est = True
-            elif alg == "nn-true-marg-wv":
-                feat_scheme = "wordvec"
-                marginals = True
-                rho_est = True
-            elif alg == "nn-sel":
-                feat_scheme = "onehot"
-                marginals = True
-                rho_est = False
-            else:
-                continue
-
-            _, yhat = train_and_predict_pytorch(train, test, embedding_model,
-                    featurization_scheme=feat_scheme,
-                    use_true_marginals=marginals,
-                    rho_est=rho_est, alg_name=alg)
-
-        elif "postgres" in alg:
-            # already pre-computed
-            yhat = np.array([s.pg_sel for s in test])
-        elif "analytic" in alg:
-            # FIXME: currently, this only makes sense for gaussian data
-            if not "gaussian" == args.gen_data_distr:
-                continue
-            yhat = predict_analytically(test, ytrue=ytest)
-        elif "svd-rho" == alg:
-            cur_alg = SVDK(k=args.svd_size, model_type="svd-rho", true_marginals=args.use_true_marginals)
-            cur_alg.train(table_stats, train)
-            yhat = cur_alg.test(test)
-        elif "svd-sel" == alg:
-            cur_alg = SVDK(k=args.svd_size, model_type="svd-sel")
-            cur_alg.train(table_stats, train)
-            yhat = cur_alg.test(test)
-        else:
-            yhat = predict_prob(test, embedding_model, alg=alg, ytrue=ytest)
-
+    for alg in algorithms:
+        alg.train(table_stats, train)
+        yhat = alg.test(test)
         test_rel_loss = compute_relative_loss(yhat, ytest)
         test_abs_loss = compute_abs_loss(yhat, ytest)
         test_qloss = compute_qerror(yhat, ytest)
@@ -689,9 +584,75 @@ def main():
             test_qloss))
 
         # store the results
-        result[alg + "rel_loss"] = test_rel_loss
-        result[alg + "abs_loss"] = test_abs_loss
-        result[alg + "qloss"] = test_qloss
+        result[str(alg) + "rel_loss"] = test_rel_loss
+        result[str(alg) + "abs_loss"] = test_abs_loss
+        result[str(alg) + "qloss"] = test_qloss
+
+    # for alg in ALGS:
+        # if args.algs is not None:
+            # if alg not in args.algs:
+                # continue
+        # print("running ", alg)
+
+        # # FIXME: combine all the attempts below into single function
+        # if "nn" in alg:
+            # if alg == "nn-true-marg-onehot":
+                # feat_scheme = "onehot"
+                # marginals = True
+                # rho_est = True
+            # elif alg == "nn-pg-marg-onehot":
+                # feat_scheme = "onehot"
+                # marginals = False
+                # rho_est = True
+            # elif alg == "nn-true-marg-wv":
+                # feat_scheme = "wordvec"
+                # marginals = True
+                # rho_est = True
+            # elif alg == "nn-sel":
+                # feat_scheme = "onehot"
+                # marginals = True
+                # rho_est = False
+            # else:
+                # continue
+
+            # _, yhat = train_and_predict_pytorch(train, test, embedding_model,
+                    # featurization_scheme=feat_scheme,
+                    # use_true_marginals=marginals,
+                    # rho_est=rho_est, alg_name=alg)
+
+        # elif "postgres" in alg:
+            # # already pre-computed
+            # yhat = np.array([s.pg_sel for s in test])
+        # elif "analytic" in alg:
+            # # FIXME: currently, this only makes sense for gaussian data
+            # if not "gaussian" == args.gen_data_distr:
+                # continue
+            # yhat = predict_analytically(test, ytrue=ytest)
+        # elif "svd-rho" == alg:
+            # cur_alg = SVDK(k=args.svd_size, model_type="svd-rho", true_marginals=args.use_true_marginals)
+            # cur_alg.train(table_stats, train)
+            # yhat = cur_alg.test(test)
+        # elif "svd-sel" == alg:
+            # cur_alg = SVDK(k=args.svd_size, model_type="svd-sel")
+            # cur_alg.train(table_stats, train)
+            # yhat = cur_alg.test(test)
+        # else:
+            # yhat = predict_prob(test, embedding_model, alg=alg, ytrue=ytest)
+
+        # test_rel_loss = compute_relative_loss(yhat, ytest)
+        # test_abs_loss = compute_abs_loss(yhat, ytest)
+        # test_qloss = compute_qerror(yhat, ytest)
+
+        # print("case: {}, alg: {}, samples: {}, abs_loss: {}, relative_loss: {}"\
+                # .format(args.table_name, alg, len(yhat), sum(abs(yhat-ytest)),
+                    # test_rel_loss))
+        # print("rel: {}, abs: {}, qerr: {}".format(test_rel_loss, test_abs_loss,
+            # test_qloss))
+
+        # store the results
+        # result[alg + "rel_loss"] = test_rel_loss
+        # result[alg + "abs_loss"] = test_abs_loss
+        # result[alg + "qloss"] = test_qloss
 
     df = pd.DataFrame([result])
     if args.store_results:
