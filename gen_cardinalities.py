@@ -163,18 +163,40 @@ def handle_query(tables, wheres):
         print(query, tkey, count)
         if count == 0:
             print("COUNT WAS 0!!!!")
-            pdb.set_trace()
+            # pdb.set_trace()
 
     conn.close()
     cur.close()
     return all_data
 
 def main():
-    file_names = glob.glob("join-order-benchmark/*.sql")
+    all_file_names = glob.glob("join-order-benchmark/*.sql")
     queries = []
-    for fn in file_names:
-        with open(fn, "rb") as f:
-            queries.append(f.read())
+    file_names = []
+    base_patterns = args.sql_file_pattern.split(",")
+    patterns = []
+    for p in base_patterns:
+        patterns.append(p + "a")
+        patterns.append(p + "b")
+        patterns.append(p + "c")
+        patterns.append(p + "d")
+        patterns.append(p + "e")
+
+    print(patterns)
+    for fn in all_file_names:
+        if len(patterns) > 0:
+            for p in patterns:
+                if "/" + p in fn:
+                    print("reading: ", fn)
+                    with open(fn, "rb") as f:
+                        queries.append(f.read())
+                    file_names.append(fn)
+        else:
+            print("reading everything!")
+            # read everything
+            file_names.append(fn)
+            with open(fn, "rb") as f:
+                queries.append(f.read())
 
     all_queries = {}
     for i, q in enumerate(queries):
@@ -240,7 +262,6 @@ def main():
         print("written out json!")
 
         num += 1
-    pdb.set_trace()
 
 def read_flags():
     parser = argparse.ArgumentParser()
@@ -263,6 +284,8 @@ def read_flags():
             default=10000)
     parser.add_argument("--exact_count", type=int, required=False,
             default=1)
+    parser.add_argument("--sql_file_pattern", type=str, required=False,
+            default="")
 
     return parser.parse_args()
 
