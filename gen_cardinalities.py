@@ -62,9 +62,10 @@ def find_next_match(tables, wheres, index):
     ignore everything till next
     '''
     match = ""
-    index, token = wheres.token_next(index)
+    _, token = wheres.token_next(index)
     if token is None:
         return None, None
+    # FIXME: is this right?
     if token.is_keyword:
         index, token = wheres.token_next(index)
 
@@ -72,20 +73,30 @@ def find_next_match(tables, wheres, index):
     assert len(tables_in_pred) <= 2
 
     token_list = sqlparse.sql.TokenList(wheres)
-    in_between = False
+
     while True:
+        index, token = token_list.token_next(index)
         if token is None:
             break
-        _, next_token = token_list.token_next(index)
-
-        if not in_between and token.value == "AND":
+        # print("token.value: ", token.value)
+        if token.value == "AND":
             break
-        match += " " + token.value
-        if (token.value == "BETWEEN"):
-            in_between = True
-        index, token = token_list.token_next(index)
 
+        match += " " + token.value
+
+        if (token.value == "BETWEEN"):
+            # ugh..
+            index, a = token_list.token_next(index)
+            index, AND = token_list.token_next(index)
+            index, b = token_list.token_next(index)
+            match += " " + a.value
+            match += " " + AND.value
+            match += " " + b.value
+            break
+
+    # print("tables: ", tables)
     # print("match: ", match)
+    # print("tables in pred: ", tables_in_pred)
     for table in tables_in_pred:
         if table not in tables:
             return index, None
@@ -106,6 +117,15 @@ def find_all_clauses(tables, wheres):
         if match is not None:
             matched.append(match)
 
+    # print("tables: ", tables)
+    # print("matched: ", matched)
+    # print("all possible matches: " )
+    # for w in str(wheres).split("\n"):
+        # for t in tables:
+            # if t in w:
+                # print(w)
+    # print("where: ", wheres)
+    # pdb.set_trace()
     return matched
 
 def handle_query(tables, wheres):
@@ -162,6 +182,13 @@ def handle_query(tables, wheres):
                     break
             if not all_joins:
                 continue
+                # print("not all joins")
+                # print(tables_string)
+                # print(cond_string)
+                # pdb.set_trace()
+            # else:
+                # print("all joins")
+                # pdb.set_trace()
 
         used_tables.sort()
 
@@ -285,8 +312,8 @@ def main():
         all_counts.update(old_saved_data)
 
     for k, query in all_queries.items():
-        # if "22d.sql" not in k:
-            # continue
+        if "33a.sql" not in k:
+            continue
         print(num, k)
         if k in all_counts:
             print('already have the data for {}'.format(k))
