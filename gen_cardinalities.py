@@ -17,7 +17,7 @@ def parse_explain(output):
     est_vals = None
     for line in output:
         line = line[0]
-        if "Join" in line:
+        if "Join" in line or "Nested Loop" in line:
             for w in line.split():
                 if "rows" in w and est_vals is None:
                     est_vals = int(re.findall("\d+", w)[0])
@@ -29,6 +29,9 @@ def parse_explain(output):
                     est_vals = int(re.findall("\d+", w)[0])
                     break
 
+    if est_vals is None:
+        print(output)
+        pdb.set_trace()
     assert est_vals is not None
     return est_vals
 
