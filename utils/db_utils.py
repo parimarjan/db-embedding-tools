@@ -313,6 +313,19 @@ class TableStats():
     def get_samples(self, num_samples=100, num_columns=2):
         '''
         '''
+        def parse_explain(output):
+            '''
+            '''
+            est_vals = None
+            for line in output:
+                line = line[0]
+                if "Seq Scan" in line:
+                    for w in line.split():
+                        if "rows" in w and est_vals is None:
+                            est_vals = int(re.findall("\d+", w)[0])
+            assert est_vals is not None
+            return est_vals
+
         def sample_row_values(op, idx1, idx2, rows):
             '''
             FIXME: could probably directly just do a sql query here.
@@ -440,15 +453,3 @@ class TableStats():
 
         return samples
 
-def parse_explain(output):
-    '''
-    '''
-    est_vals = None
-    for line in output:
-        line = line[0]
-        if "Seq Scan" in line:
-            for w in line.split():
-                if "rows" in w and est_vals is None:
-                    est_vals = int(re.findall("\d+", w)[0])
-    assert est_vals is not None
-    return est_vals

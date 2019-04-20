@@ -8,8 +8,21 @@ from utils.db_utils import *
 import json
 import os
 
-QUERY_TMP_ANALYZE = "EXPLAIN SELECT COUNT(*) FROM {TABLES} {CONDS}"
+QUERY_TMP_ANALYZE = "EXPLAIN (FORMAT JSON) SELECT COUNT(*) FROM {TABLES} {CONDS}"
 QUERY_TMP = "SELECT COUNT(*) FROM {TABLES} {CONDS}"
+
+def parse_explain(output):
+    '''
+    '''
+    est_vals = None
+    for line in output:
+        line = line[0]
+        if "Seq Scan" in line:
+            for w in line.split():
+                if "rows" in w and est_vals is None:
+                    est_vals = int(re.findall("\d+", w)[0])
+    assert est_vals is not None
+    return est_vals
 
 def find_all_tables_till_keyword(token):
     tables = []
@@ -32,12 +45,9 @@ def find_all_tables_till_keyword(token):
             if ("Literal" in str(token.ttype)) or token.is_keyword:
                 break
         except:
-            # print(token)
-            # pdb.set_trace()
             break
-    # print("returning tables: ", tables)
-    return tables
 
+    return tables
 
 def find_next_match(tables, wheres, index):
     '''
@@ -88,8 +98,9 @@ def find_all_clauses(tables, wheres):
         if match is not None:
             matched.append(match)
 
-    # print("tables: ", tables)
-    # print("matched: ", matched)
+    # need to handle joins: if there are more than 1 table in tables, then
+    # the predicates must include a join in between them
+
     return matched
 
 def handle_query(tables, wheres):
@@ -157,13 +168,17 @@ def handle_query(tables, wheres):
             query = QUERY_TMP_ANALYZE.format(TABLES=tables_string, CONDS=cond_string)
             cur.execute(query)
             exp_output = cur.fetchall()
-            count = parse_explain(exp_output)
+            # count = parse_explain(exp_output)
+            print(query)
+            print(exp_output)
+            print("count: ", count)
+            pdb.set_trace()
 
         all_data[tkey] = count
-        print(query, tkey, count)
+        # print(query, tkey, count)
+        print(tkey, count)
         if count == 0:
             print("COUNT WAS 0!!!!")
-            # pdb.set_trace()
 
     conn.close()
     cur.close()
@@ -173,16 +188,17 @@ def main():
     all_file_names = glob.glob("join-order-benchmark/*.sql")
     queries = []
     file_names = []
-    base_patterns = args.sql_file_pattern.split(",")
     patterns = []
-    for p in base_patterns:
-        patterns.append(p + "a")
-        patterns.append(p + "b")
-        patterns.append(p + "c")
-        patterns.append(p + "d")
-        patterns.append(p + "e")
+    if not args.sql_file_pattern == "":
+        base_patterns = args.sql_file_pattern.split(",")
+        for p in base_patterns:
+            patterns.append(p + "a")
+            patterns.append(p + "b")
+            patterns.append(p + "c")
+            patterns.append(p + "d")
+            patterns.append(p + "e")
+        print(patterns)
 
-    print(patterns)
     for fn in all_file_names:
         if len(patterns) > 0:
             for p in patterns:
@@ -192,7 +208,6 @@ def main():
                         queries.append(f.read())
                     file_names.append(fn)
         else:
-            print("reading everything!")
             # read everything
             file_names.append(fn)
             with open(fn, "rb") as f:
@@ -232,11 +247,6 @@ def main():
         assert where_clauses is not None
         # token_list = sqlparse.sql.TokenList(where_clauses)
         file_name = file_names[i]
-        # if "22d.sql" not in file_name:
-            # continue
-        # print(tables)
-        # pdb.set_trace()
-        # where_clauses = str(where_clauses).replace("WHERE","").replace("AND","").replace(";","").split("\n")
         all_queries[file_name] = (tables, where_clauses)
 
     all_counts = {}
@@ -250,16 +260,15 @@ def main():
     for k, query in all_queries.items():
         # if "22d.sql" not in k:
             # continue
-        print(num)
-        print(k)
+        print(num, k)
         if k in all_counts:
-            print('already have the data!')
+            print('already have the data for {}'.format(k))
             continue
         data = handle_query(query[0], query[1])
         all_counts[k] = data
         with open(args.output_name, "w") as f:
             f.write(json.dumps(all_counts))
-        print("written out json!")
+        print("written out json {}".format(args.output_name))
 
         num += 1
 
