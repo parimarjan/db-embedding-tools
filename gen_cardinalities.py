@@ -94,11 +94,12 @@ def find_next_match(tables, wheres, index):
             match += " " + b.value
             break
 
-    # print("tables: ", tables)
-    # print("match: ", match)
-    # print("tables in pred: ", tables_in_pred)
+    print("tables: ", tables)
+    print("match: ", match)
+    print("tables in pred: ", tables_in_pred)
     for table in tables_in_pred:
         if table not in tables:
+            print("returning index, None")
             return index, None
 
     if len(tables_in_pred) == 0:
@@ -112,10 +113,12 @@ def find_all_clauses(tables, wheres):
     index = 0
     while True:
         index, match = find_next_match(tables, wheres, index)
-        if index is None:
-            break
+        print("got index, match: ", index)
+        print(match)
         if match is not None:
             matched.append(match)
+        if index is None:
+            break
 
     # print("tables: ", tables)
     # print("matched: ", matched)
@@ -126,6 +129,11 @@ def find_all_clauses(tables, wheres):
                 # print(w)
     # print("where: ", wheres)
     # pdb.set_trace()
+    if len(tables) == 2:
+        if (tables[0] == "ct" and tables[1] == "mc"):
+            print(matched)
+            pdb.set_trace()
+
     return matched
 
 def handle_query(tables, wheres):
@@ -312,8 +320,8 @@ def main():
         all_counts.update(old_saved_data)
 
     for k, query in all_queries.items():
-        if "33a.sql" not in k:
-            continue
+        # if "33a.sql" not in k:
+            # continue
         print(num, k)
         if k in all_counts:
             print('already have the data for {}'.format(k))
