@@ -8,7 +8,7 @@ from utils.db_utils import *
 import json
 import os
 
-QUERY_TMP_ANALYZE = "EXPLAIN (FORMAT JSON) SELECT COUNT(*) FROM {TABLES} {CONDS}"
+QUERY_TMP_ANALYZE = "EXPLAIN SELECT COUNT(*) FROM {TABLES} {CONDS}"
 QUERY_TMP = "SELECT COUNT(*) FROM {TABLES} {CONDS}"
 
 def parse_explain(output):
@@ -17,10 +17,18 @@ def parse_explain(output):
     est_vals = None
     for line in output:
         line = line[0]
-        if "Seq Scan" in line:
+        if "Join" in line:
             for w in line.split():
                 if "rows" in w and est_vals is None:
                     est_vals = int(re.findall("\d+", w)[0])
+                    break
+
+        elif "Seq Scan" in line:
+            for w in line.split():
+                if "rows" in w and est_vals is None:
+                    est_vals = int(re.findall("\d+", w)[0])
+                    break
+
     assert est_vals is not None
     return est_vals
 
@@ -181,12 +189,17 @@ def handle_query(tables, wheres):
             query = QUERY_TMP_ANALYZE.format(TABLES=tables_string, CONDS=cond_string)
             cur.execute(query)
             exp_output = cur.fetchall()
-            # count = parse_explain(exp_output)
-            print(query)
-            print(exp_output)
-            # print("count: ", count)
-            count = 100
-            pdb.set_trace()
+            count = parse_explain(exp_output)
+            # if len(used_tables) == 1:
+                # print(query)
+                # print(exp_output)
+                # print(count)
+                # pdb.set_trace()
+            # else:
+                # # joins
+                # print(query)
+                # print(exp_output)
+                # count = parse_explain(exp_output)
 
         all_data[tkey] = count
         # print(query, tkey, count)
