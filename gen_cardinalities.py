@@ -98,9 +98,6 @@ def find_all_clauses(tables, wheres):
         if match is not None:
             matched.append(match)
 
-    # need to handle joins: if there are more than 1 table in tables, then
-    # the predicates must include a join in between them
-
     return matched
 
 def handle_query(tables, wheres):
@@ -141,7 +138,23 @@ def handle_query(tables, wheres):
         if cond_string != "":
             cond_string = "WHERE " + cond_string
 
-        # used_tables = [c for c in comb]
+        # need to handle joins: if there are more than 1 table in tables, then
+        # the predicates must include a join in between them
+        if len(aliases) > 1:
+            all_joins = True
+            for alias in aliases:
+                joined = False
+                for match in matches:
+                    if match.count(".") == 2:
+                        # FIXME: so hacky ugh.
+                        if (" " + alias + "." in " " + match):
+                            joined = True
+                if not joined:
+                    all_joins = False
+                    break
+            if not all_joins:
+                continue
+
         used_tables.sort()
 
         tkey = ""
@@ -171,7 +184,8 @@ def handle_query(tables, wheres):
             # count = parse_explain(exp_output)
             print(query)
             print(exp_output)
-            print("count: ", count)
+            # print("count: ", count)
+            count = 100
             pdb.set_trace()
 
         all_data[tkey] = count
