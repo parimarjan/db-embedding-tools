@@ -74,6 +74,8 @@ def find_next_match(tables, wheres, index):
 
     token_list = sqlparse.sql.TokenList(wheres)
 
+    # print(index, tables_in_pred, token)
+    # pdb.set_trace()
     while True:
         index, token = token_list.token_next(index)
         if token is None:
@@ -85,18 +87,16 @@ def find_next_match(tables, wheres, index):
         match += " " + token.value
 
         if (token.value == "BETWEEN"):
-            # ugh..
+            # ugh ugly fix
             index, a = token_list.token_next(index)
             index, AND = token_list.token_next(index)
             index, b = token_list.token_next(index)
             match += " " + a.value
             match += " " + AND.value
             match += " " + b.value
-            break
+            # Note: important to not break here. Will break when we hit the AND
+            # in the next iteration so the index is correctly updated
 
-    # print("tables: ", tables)
-    # print("match: ", match)
-    # print("tables in pred: ", tables_in_pred)
     for table in tables_in_pred:
         if table not in tables:
             # print("returning index, None")
@@ -136,11 +136,15 @@ def find_all_clauses(tables, wheres):
 
     return matched
 
-def handle_query(tables, wheres):
+def handle_query(tables, wheres, old_data=None):
+    '''
+    old_data is the equivalent of all_data, if you are re-running a particular
+    query. Will avoid filling in values that you already have.
+    '''
     all_data = {}
     conn = pg.connect(host=args.db_host, database=args.db_name,
             user=args.user_name,
-            password=args.pwd)
+            password=args.pwd, port = args.port)
     cur = conn.cursor()
     combs = []
 
@@ -148,8 +152,6 @@ def handle_query(tables, wheres):
     all_aliases = [t[1] for t in tables]
 
     for i in range(1, len(tables)+1):
-        # combs += itertools.combinations(tables.keys(), i)
-        # combs += itertools.combinations(table_names, i)
         combs += itertools.combinations(list(range(len(all_tables))), i)
 
     for comb in combs:
@@ -190,19 +192,14 @@ def handle_query(tables, wheres):
                     break
             if not all_joins:
                 continue
-                # print("not all joins")
-                # print(tables_string)
-                # print(cond_string)
-                # pdb.set_trace()
-            # else:
-                # print("all joins")
-                # pdb.set_trace()
-
         used_tables.sort()
 
         tkey = ""
         for usedt in used_tables:
             tkey += " " + usedt
+
+        if old_data is not None and tkey in old_data:
+            continue
 
         if args.exact_count:
             query = QUERY_TMP.format(TABLES=tables_string, CONDS=cond_string)
@@ -225,16 +222,6 @@ def handle_query(tables, wheres):
             cur.execute(query)
             exp_output = cur.fetchall()
             count = parse_explain(exp_output)
-            # if len(used_tables) == 1:
-                # print(query)
-                # print(exp_output)
-                # print(count)
-                # pdb.set_trace()
-            # else:
-                # # joins
-                # print(query)
-                # print(exp_output)
-                # count = parse_explain(exp_output)
 
         all_data[tkey] = count
         # print(query, tkey, count)
@@ -320,14 +307,14 @@ def main():
         all_counts.update(old_saved_data)
 
     for k, query in all_queries.items():
-        # if "33a.sql" not in k:
-            # continue
         print(num, k)
+        old_query_data = None
         if k in all_counts:
-            print('already have the data for {}'.format(k))
-            continue
-        data = handle_query(query[0], query[1])
-        all_counts[k] = data
+            print('going to update the data for {}'.format(k))
+            old_query_data = all_counts[k]
+
+        data = handle_query(query[0], query[1], old_query_data)
+        all_counts[k].update(data)
         with open(args.output_name, "w") as f:
             f.write(json.dumps(all_counts))
         print("written out json {}".format(args.output_name))
@@ -343,10 +330,13 @@ def read_flags():
     ## other vals
     parser.add_argument("--db_host", type=str, required=False,
             default="localhost")
+    parser.add_argument("--port", type=int, required=False,
+            default=5400)
     parser.add_argument("--user_name", type=str, required=False,
             default="imdb")
     parser.add_argument("--pwd", type=str, required=False,
-            default="")
+            default="imdb")
+
     parser.add_argument("--output_name", type=str, required=False,
             default="test.json")
     parser.add_argument("--debug", type=int, required=False,
@@ -354,7 +344,7 @@ def read_flags():
     parser.add_argument("--query_timeout", type=int, required=False,
             default=10000)
     parser.add_argument("--exact_count", type=int, required=False,
-            default=1)
+            default=0)
     parser.add_argument("--sql_file_pattern", type=str, required=False,
             default="")
 
